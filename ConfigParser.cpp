@@ -162,6 +162,11 @@ void ConfigParser::parseLocation(Location &location, const std::string &line)
     {
         location.cgi_path = stripSemicolon(tokens[1]);
     }
+	else if (directive == "upload_store")
+	{
+	    location.upload_store = tokens[1].substr(0, tokens[1].length() - 1);
+	    std::cout << "  Parsed upload_store: '" << location.upload_store << "'" << std::endl;
+	}
 }
 
 void ConfigParser::printLocation(Location &location)
@@ -176,7 +181,7 @@ void ConfigParser::printLocation(Location &location)
 	}
 
 	std::cout << "  cgi_path = " << location.cgi_path << std::endl;
-	std::cout << "  upload_store = " << location.upoload_store << std::endl;
+	std::cout << "  upload_store = " << location.upload_store << std::endl;
 	std::cout << "  autoindex = " << location.autoindex << std::endl;
 	std::cout << "  return_redirect = " << location.return_redirect << std::endl;
 

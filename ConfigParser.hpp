@@ -8,7 +8,7 @@ struct	Location
 	std::string					index;
 	std::vector<std::string>	allowed_methods;
 	std::string					cgi_path;
-	std::string					upoload_store;
+	std::string					upload_store;
 	bool						autoindex;
 	std::string					return_redirect;
 	std::map<int, std::string>	error_pages;

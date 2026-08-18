@@ -22,7 +22,9 @@
 #include <dirent.h>
 #include <signal.h>
 #include <errno.h>
+#include <dirent.h>
 
+#include "Router.hpp"
 #include "Response.hpp"
 #include "Request.hpp"
 #include "ConfigParser.hpp"

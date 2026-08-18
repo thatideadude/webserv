@@ -23,8 +23,11 @@ class	Request
 		size_t										getContentLength(void) const;
 		bool										isChunked(void) const;
 
+		void										setBody(const std::string &body);
 		void										setMethod(const std::string &method);
 		void										setUri(const std::string &uri);
+
+		std::string									decodeUri(const std::string& uri) const;
 	private:
 		std::string									_method;
 		std::string									_uri;
@@ -38,9 +41,14 @@ class	Request
 		bool										_chunked;
 		size_t										_body_bytes_read;
 
+		std::string									_decoded_uri;
+		std::string									_query_string;
+		std::string									_path;
+
 		bool										_parseRequestLine(const std::string &line);
 		bool										_parseHeaderLine(const std::string &line);
 		bool										_parseChunkedBody(void);
 		bool										_parseContentLengthBody(void);
 		std::string									_trim(const std::string &str);
+		void										_parseUri(void);
 };
