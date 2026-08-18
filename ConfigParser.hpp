@@ -28,7 +28,7 @@ struct	Server
 class	ConfigParser
 {
 	private:
-		std::vector<Server>		m_servers;
+		std::vector<Server>		_servers;
 
 	public:
 		ConfigParser(void);

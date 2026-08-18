@@ -31,7 +31,7 @@ ConfigParser::ConfigParser(const ConfigParser &other)
 ConfigParser &ConfigParser::operator=(const ConfigParser &other)
 {
 	if (this != &other)
-		m_servers = other.m_servers;
+		_servers = other._servers;
 	return (*this);
 }
 
@@ -193,26 +193,26 @@ void ConfigParser::printLocation(Location &location)
 
 void ConfigParser::printConfig(void)
 {
-	if (m_servers.empty())
+	if (_servers.empty())
 		return;
 
-	for (size_t i = 0; i < m_servers.size(); ++i)
+	for (size_t i = 0; i < _servers.size(); ++i)
 	{
 		std::cout << "--- Server #" << i << " ---" << std::endl;
-		std::cout << "port = " << m_servers[i].port << std::endl;
-		std::cout << "host = " << m_servers[i].host << std::endl;
+		std::cout << "port = " << _servers[i].port << std::endl;
+		std::cout << "host = " << _servers[i].host << std::endl;
 
-		for (size_t j = 0; j < m_servers[i].server_names.size(); ++j)
-			std::cout << "#" << j << " server_name = " << m_servers[i].server_names[j] << std::endl;
+		for (size_t j = 0; j < _servers[i].server_names.size(); ++j)
+			std::cout << "#" << j << " server_name = " << _servers[i].server_names[j] << std::endl;
 
 		std::map<int, std::string>::const_iterator it;
-		for (it = m_servers[i].error_pages.begin(); it != m_servers[i].error_pages.end(); ++it)
+		for (it = _servers[i].error_pages.begin(); it != _servers[i].error_pages.end(); ++it)
 			std::cout << "error " << it->first << " = " << it->second << std::endl;
 
-		std::cout << "client_max_body_size = " << m_servers[i].client_max_body_size << std::endl;
+		std::cout << "client_max_body_size = " << _servers[i].client_max_body_size << std::endl;
 
-		for (size_t j = 0; j < m_servers[i].locations.size(); ++j)
-			printLocation(m_servers[i].locations[j]);
+		for (size_t j = 0; j < _servers[i].locations.size(); ++j)
+			printLocation(_servers[i].locations[j]);
 	}
 }
 
@@ -268,13 +268,12 @@ void ConfigParser::parseFile(std::string const &file)
 					parseServer(server, str);
 				}
 			}
-			m_servers.push_back(server);
+			_servers.push_back(server);
 		}
 	}
 }
 
 std::vector<Server>	&ConfigParser::getServers(void)
 {
-	return (m_servers);
+	return (_servers);
 }
-

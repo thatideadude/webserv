@@ -1,7 +1,7 @@
 CXX			= c++
 CXXFLAGS	= -Wall -Wextra -Werror -std=c++98 -g
 NAME		= webserv
-SRCS		= main.cpp ConfigParser.cpp Webserver.cpp split.cpp 
+SRCS		= main.cpp ConfigParser.cpp Webserver.cpp split.cpp Client.cpp Request.cpp Response.cpp
 OBJS		= $(SRCS:.cpp=.o)
 
 all: $(NAME)
