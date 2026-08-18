@@ -1,12 +1,10 @@
-#include "ConfigParser.hpp"
-#include <cstring>
-#include <cstdlib>
-#include <cctype>
+#include "webserv.hpp"
+#include <string>
 
 std::string stripSemicolon(std::string str)
 {
-    if (!str.empty() && str.back() == ';')
-        str.pop_back();
+    if (!str.empty() && str[str.size() - 1] == ';')
+        str.erase(str.size() - 1, 1);
     return str;
 }
 
