@@ -13,7 +13,7 @@ Router::Router(const Router &other)
 
 Router	&Router::operator=(const Router &other)
 {
-	(void) other;
+	_mime_types = other._mime_types;
 	return (*this);
 }
 
@@ -28,17 +28,15 @@ const Location	*Router::findLocation(const Server &server, const std::string &ur
 	size_t			best_match_len = 0;
 	size_t			i = 0;
 
-    std::cout << "  Looking for location matching: '" << uri << "'" << std::endl;
+	std::cout << "Looking for location matching: '" << uri << "'" << std::endl;
 	while (i < server.locations.size())
 	{
 		const Location		&loc = server.locations[i];
-		const	std::string	&path = loc.path;
-
-        std::cout << "    Checking: '" << path << "'" << std::endl;
-
+		const std::string	&path = loc.path;
+		std::cout << "Checking: '" << path << "'" << std::endl;
 		if (path == "/")
 		{
-            std::cout << "      Root (will use as fallback if needed)" << std::endl;
+			std::cout << "Root (will use as fallback if needed)" << std::endl;
 			if (!best_match)
 			{
 				best_match = &loc;
@@ -47,23 +45,23 @@ const Location	*Router::findLocation(const Server &server, const std::string &ur
 			++i;
 			continue ;
 		}
-        size_t	found = uri.find(path);
-        std::cout << "      uri.find(path) = " << found << std::endl;
+		size_t	found = uri.find(path);
+		std::cout << "uri.find(path) = " << found << std::endl;
 		if (found == 0)
 		{
-			std::cout << "      Match found!" << std::endl;
+			std::cout << "Match found\n";
 			if (path.length() > best_match_len)
 			{
 				best_match = &loc;
 				best_match_len = path.length();
-				std::cout << "      New best match: '" << path << "' (length: " << best_match_len << ")" << std::endl;
+				std::cout << "New best match: '" << path << "' (length: " << best_match_len << ")\n"; 
 			}
 		}
 		else
-			std::cout << "      No match" << std::endl;
+			std::cout << "No match\n";
 		++i;
-    }
-	std::cout << "  Final match: '" << (best_match ? best_match->path : "NULL") << "'" << std::endl;
+	}
+	std::cout << "Final match: '" << (best_match ? best_match->path : "NULL") << "'" << std::endl;
 	return (best_match);
 }
 
@@ -82,15 +80,15 @@ std::string	Router::buildPath(const Location &location, const std::string &uri)
 		path += loc_path;
 		path += "/";
 	}
-	std::string file_part;
+	std::string	file_part;
 	if (uri.find(location.path) == 0)
 		file_part = uri.substr(location.path.size());
 	else
 		file_part = uri;
 	if (!file_part.empty())
 		path += file_part;
-	std::cout << "    buldPath:  '" << path << "'" << std::endl;
-	return (path);
+	std::cout << "buildPath: '" << path << "'\n";
+	return (path); 
 }
 
 bool	Router::isMethodAllowed(const Location &location, const std::string &method)
@@ -108,14 +106,6 @@ bool	Router::isMethodAllowed(const Location &location, const std::string &method
 	return (false);
 }
 
-bool	Router::isDirectory(const std::string &path)
-{
-	struct stat	st;
-	if (stat(path.c_str(), &st) != 0)
-		return (false);
-	return (S_ISDIR(st.st_mode));
-}
-
 std::string	Router::generateDirectoryListing(const std::string &path, const std::string &uri)
 {
 	DIR			*dir = opendir(path.c_str());
@@ -126,7 +116,7 @@ std::string	Router::generateDirectoryListing(const std::string &path, const std:
 	html += "<html><head><title>Index of " + uri + "</title></head><body>";
 	html += "<h1>Index of " + uri + "</h1><hr><ul>";
 
-	struct dirent*	entry;
+	struct dirent	*entry;
 	while ((entry = readdir(dir)) != NULL)
 	{
 		std::string	name = entry->d_name;
@@ -164,10 +154,10 @@ void	Router::_initMimeTypes(void)
 
 std::string	Router::getMimeType(const std::string &path)
 {
-	size_t											dot = path.rfind('.');
+	size_t	dot = path.rfind('.');
 	if (dot == std::string::npos)
 		return ("application/octet-stream");
-	std::string										ext = path.substr(dot);
+	std::string	ext = path.substr(dot);
 	std::map<std::string, std::string>::iterator	it = _mime_types.find(ext);
 	if (it != _mime_types.end())
 		return (it->second);

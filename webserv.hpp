@@ -12,6 +12,7 @@
 #include <ctime>
 #include <climits>
 
+#include <sys/wait.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -24,12 +25,13 @@
 #include <errno.h>
 #include <dirent.h>
 
+#include "Parser.hpp"
+#include "CGIHandler.hpp"
 #include "Router.hpp"
-#include "Response.hpp"
 #include "Request.hpp"
-#include "ConfigParser.hpp"
-#include "Webserver.hpp"
+#include "Response.hpp"
 #include "Client.hpp"
+#include "Webserver.hpp"
 
 #define BUFFER_SIZE 4096
 #define BACKLOG 128
@@ -38,4 +40,5 @@
 #define CHUNK_SIZE 512
 #define MAX_EVENTS 1024
 
-std::vector<std::string>	string_split(std::string str);
+extern volatile sig_atomic_t	g_shutdown;
+

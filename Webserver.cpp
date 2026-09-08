@@ -1,22 +1,22 @@
 #include "webserv.hpp"
+#include "CGIHandler.hpp"
 
-Webserver::Webserver(std::vector<Server> &servers) : _configs(servers)
+Webserver::Webserver(std::vector<Server> &servers) :_configs(servers)
 {
 	std::cout << "Webserver constructor called\n";
 }
 
-Webserver::Webserver(const Webserver &other) : _configs(other._configs)
+Webserver::Webserver(const Webserver &other)
 {
-	if (this != &other)
-		*this = other;
 	std::cout << "Webserver copy constructor called\n";
+	*this = other;
 }
 
 Webserver	&Webserver::operator=(const Webserver &other)
 {
+	std::cout << "Webserver assignment operator called\n";
 	if (this != &other)
 	{
-		// Copy all members one by one
 		_configs = other._configs;
 		_server_sockets = other._server_sockets;
 		_poll_fds = other._poll_fds;
@@ -29,22 +29,444 @@ Webserver	&Webserver::operator=(const Webserver &other)
 Webserver::~Webserver(void)
 {
 	std::cout << "Webserver destructor called\n";
-	_cleanup();
 }
 
+void Webserver::run(void)
+{
+	_setupSockets();
+	_running = true;
+
+	std::cout << "  Server running on " << _server_sockets.size() << " socket(s)" << std::endl;
+
+	while (_running && !g_shutdown)
+	{
+		int ret = poll(_poll_fds.data(), _poll_fds.size(), 1000);
+
+		if (ret < 0)
+		{
+			if (errno == EINTR)
+			{
+				if (g_shutdown)
+					break ;
+				continue;
+			}
+			std::cerr << "poll() error: " << strerror(errno) << std::endl;
+			break;
+		}
+
+		if (ret > 0)
+		{
+			std::vector<std::pair<int, short> >	events;
+			size_t									i = 0;
+
+			while (i < _poll_fds.size())
+			{
+				if (_poll_fds[i].revents)
+					events.push_back(std::make_pair(_poll_fds[i].fd, _poll_fds[i].revents));
+				++i;
+			}
+			i = 0;
+			while (i < events.size())
+			{
+				int		fd = events[i].first;
+				short	revents = events[i].second;
+				++i;
+
+				if (!_isFdTracked(fd))
+					continue ;
+				if (revents & (POLLIN | POLLHUP))
+				{
+					if (_server_sockets.find(fd) != _server_sockets.end())
+					{
+						if (revents & POLLIN)
+							_acceptNewConnection(fd);
+					}
+					else if (_cgi_fd_to_client.find(fd) != _cgi_fd_to_client.end())
+						_handleCGIRead(fd);
+					else
+						_handleClientData(fd);
+				}
+				if (!_isFdTracked(fd))
+					continue ;
+
+				if (revents & POLLOUT)
+				{
+					if (_cgi_fd_to_client.find(fd) != _cgi_fd_to_client.end())
+						_handleCGIWrite(fd);
+					else
+						_handleClientWrite(fd);
+				}
+				if (!_isFdTracked(fd))
+					continue ;
+				if (revents & (POLLERR | POLLNVAL))
+					_handleFdError(fd);
+			}
+		}
+		_checkTimeouts();
+	}
+}
+void	Webserver::stop(void)
+{
+	_running = false;
+}
+
+void	Webserver::_setupSockets(void)
+{
+	size_t	i = 0;
+	try
+	{
+		while (i < _configs.size())
+			_createSockets(_configs[i++]);
+	}
+	catch (std::exception &e)
+	{
+		std::cerr << e.what() << std::endl;
+	}
+}
+
+void Webserver::_createSockets(const Server& config)
+{
+	int	sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	if (sockfd < 0)
+		throw std::runtime_error("Failed to create socket: " + std::string (strerror(errno)));
+	int	opt = 1;
+	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+	{
+		close(sockfd);
+		throw std::runtime_error("Failed to set SO_REUSEADDR: " + std::string(strerror(errno)));
+	}
+	if (fcntl(sockfd, F_SETFL, O_NONBLOCK) < 0)
+	{
+		close(sockfd);
+		throw std::runtime_error("Failed to set non-blocking mode");
+	}
+	
+	struct sockaddr_in	addr;
+	std::memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(config.port);
+	if (config.host.empty() || config.host == "0.0.0.0")
+		addr.sin_addr.s_addr = INADDR_ANY;
+	else
+	{
+		struct in_addr	ip_addr;
+		if (!inet_aton(config.host.c_str(), &ip_addr))
+		{
+			close(sockfd);
+			throw std::runtime_error("Invalid IP address: " + config.host);
+		}
+	}
+	if (bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+	{
+		close(sockfd);
+		throw std::runtime_error("Failed to bind port to " + Parser::toString(config.port) + ": " + std::string (strerror(errno)));
+	}
+	if (listen(sockfd, BACKLOG) < 0)
+	{
+		close(sockfd);
+		throw std::runtime_error("Failed to listen on socket: " + std::string(strerror(errno)));
+	}
+	std::cout << "Listening on fd " << sockfd << " port " << config.port << std::endl;
+	_server_sockets[sockfd] = config;
+	struct pollfd	pfd;
+	pfd.fd = sockfd;
+	pfd.events = POLLIN;
+	pfd.revents = 0;
+	_poll_fds.push_back(pfd);
+}
+
+void	Webserver::_acceptNewConnection(int server_fd)
+{
+	struct sockaddr_in	client_addr;
+	socklen_t			addr_len = sizeof(client_addr);
+
+	int	client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
+	if (client_fd < 0)
+	{
+		std::cerr << "accept() failed\n";
+		return;
+	}
+	int	flags = fcntl(client_fd, F_GETFL, 0);
+	if (flags < 0 || fcntl(client_fd, F_SETFL, flags | O_NONBLOCK) < 0)
+	{
+		std::cerr << "fnctl() failed on client fd: " << strerror(errno) << std::endl;
+		close(client_fd);
+		return ;
+	}
+	Client *client = new Client(client_fd);
+	client->setLastActivity(time(NULL));
+	std::map<int, Server>::iterator	sit = _server_sockets.find(server_fd);
+	if (sit != _server_sockets.end())
+		client->setListenPort(sit->second.port);
+	_clients[client_fd] = client;
+	struct pollfd	pfd;
+	pfd.fd = client_fd;
+	pfd.events = POLLIN;
+	pfd.revents = 0;
+	_poll_fds.push_back(pfd);
+	std::cout << "Accepted new client: fd " << client_fd << std::endl; 
+}
+
+bool	Webserver::_isFdTracked(int fd) const
+{
+	if (_server_sockets.find(fd) != _server_sockets.end())
+		return (true);
+	if (_clients.find(fd) != _clients.end())
+		return (true);
+	if (_cgi_fd_to_client.find(fd) != _cgi_fd_to_client.end())
+		return (true);
+	return (false);
+}
+
+void	Webserver::_handleCGIRead(int fd)
+{
+	std::map<int, int>::iterator	cit = _cgi_fd_to_client.find(fd);
+	if (cit == _cgi_fd_to_client.end())
+		return ;
+	int		client_fd = cit->second;
+	Client	*client = _clients.count(cit->second) ? _clients[client_fd] : NULL;
+	if (!client || !client->getCgi())
+	{
+		_removeCGIFd(fd);
+		return ;
+	}
+	if (client->getCgi()->readFromOutput())
+	{
+		_removeCGIFd(fd);
+		_finishCGI(client_fd);
+	}
+}
+
+void	Webserver::_handleCGIWrite(int fd)
+{
+	std::map<int, int>::iterator	cit = _cgi_fd_to_client.find(fd);
+	if (cit == _cgi_fd_to_client.end())
+		return ;
+	Client	*client = _clients.count(cit->second) ? _clients[cit->second] : NULL;
+	if (!client || !client->getCgi())
+	{
+		_removeCGIFd(fd);
+		return ;
+	}
+	if (client->getCgi()->writeToInput())
+	{
+		bool	failed = (client->getCgi()->getState() == CGI_ERROR);
+		_removeCGIFd(fd);
+		if (failed)
+		{
+			delete client->getCgi();
+			client->setCgi(NULL);
+			_sendErrorResponse(client, 500, "Internal Server Error - CGI write failed");
+			return ;
+		}
+		client->setState(CGI_READING);
+	}
+}
+
+void	Webserver::_finishCGI(int client_fd)
+{
+	Client		*client = _clients.count(client_fd) ? _clients[client_fd] : NULL;
+	if (!client)
+		return ;
+	CGIHandler	*cgi = client->getCgi();
+	if (!cgi)
+		return ;
+	if (cgi->getState() == CGI_ERROR)
+	{
+		delete cgi;
+		client->setCgi(NULL);
+		_sendErrorResponse(client, 502, "Bad Gateway - CGI error");
+		return ;
+	}
+
+	int									status = cgi->getStatusCode();
+	std::string							body = cgi->getParsedBody();
+	std::map<std::string, std::string>	headers = cgi->getParsedHeaders();
+	std::string							content_type = headers.count("Content-Type") ? headers["Content-Type"] : "text/html";
+	std::string							response = "HTTP/1.1 " + Parser::toString(status) + " OK\r\n";
+	response += "Content-Type: " + content_type + "\r\n";
+	response += "Content-Length: " + Parser::toString(body.size()) + "\r\n";
+	
+	std::map<std::string, std::string>::iterator	it = headers.begin();
+	while (it != headers.end())
+	{
+		if (it->first != "Content-Type")
+			response += it->first + ": " + it->second + "\r\n";
+		++it;
+	}
+	response += "Connection: close\r\n\r\n" + body;
+
+	delete cgi;
+	client->setCgi(NULL);
+	client->setSendBuffer(response);
+	client->setState(SENDING_HEADERS);
+	_updatePollEvents(client->getFd(), POLLIN | POLLOUT);
+}
+
+void	Webserver::_handleFdError(int fd)
+{
+	std::map<int, int>::iterator	cit = _cgi_fd_to_client.find(fd);
+	if (cit != _cgi_fd_to_client.end())
+	{
+		int		client_fd = cit->second;
+		Client	*client = _clients.count(client_fd) ? _clients[client_fd] : NULL;
+		_removeCGIFd(fd);
+		if (client && client->getCgi())
+		{
+			client->getCgi()->kill();
+			delete client->getCgi();
+			client->setCgi(NULL);
+			_sendErrorResponse(client, 502, "Bad Gateway - CGI pipe error");
+		}
+		return ;
+	}
+	_removeClient(fd);
+}
+
+void	Webserver::_removeCGIFd(int fd)
+{
+	std::vector<struct pollfd>::iterator	it = _poll_fds.begin();
+	while (it != _poll_fds.end())
+	{
+		if (it->fd == fd)
+		{
+			_poll_fds.erase(it);
+			break ;
+		}
+		++it;
+	}
+	close(fd);
+	_cgi_fd_to_client.erase(fd);
+}
+
+void	Webserver::_removeClient(int client_fd)
+{
+	std::map<int, Client *>::iterator	cit = _clients.find(client_fd);
+	if (cit != _clients.end())
+	{
+		Client	*client = cit->second;
+		if (client && client->getCgi())
+		{
+			int	in_fd = client->getCgi()->getInputFd();
+			int	out_fd = client->getCgi()->getOutputFd();
+			if (in_fd >= 0)
+				_removeCGIFd(in_fd);
+			if (out_fd >= 0)
+				_removeCGIFd(out_fd);
+			client->getCgi()->kill();
+		}
+		delete client;
+		_clients.erase(cit);
+	}
+	else
+		std::cout << "Client " << client_fd << " not found in _clients map\n";
+	
+	std::vector<struct pollfd>::iterator	it = _poll_fds.begin();
+	while (it != _poll_fds.end())
+	{
+		if (it->fd == client_fd)
+		{
+			_poll_fds.erase(it);
+			break ;
+		}
+		++it;
+	}
+	if (client_fd >= 0)
+	{
+		close(client_fd);
+		std::cout << "Closed fd " << client_fd << std::endl;
+	}
+}
+
+void	Webserver::_checkTimeouts(void)
+{
+	time_t	now = time(NULL);
+	std::map<int, Client *>::iterator	it = _clients.begin();
+	while (it != _clients.end())
+	{
+		Client	*client = it->second;
+		int		fd = it->first;
+		++it;
+
+		if (!client)
+			continue ;
+		if (client->getCgi() && client->getCgi()->hasTimeOut())
+		{
+			std::cout << "CGI for client " << fd << " timed out" << std::endl;
+			int	in_fd = client->getCgi()->getInputFd();
+			int	out_fd = client->getCgi()->getOutputFd();
+			if (in_fd >= 0)
+				_removeCGIFd(in_fd);
+			if (out_fd >= 0)
+				_removeCGIFd(out_fd);
+			client->getCgi()->kill();
+			delete client->getCgi();
+			client->setCgi(NULL);
+			_sendErrorResponse(client, 504, "Gateway Timeout");
+			continue ;
+		}
+		if (now - client->getLastActivity() > TIMEOUT_SECONDS)
+		{
+			std::cout << "Client " << fd << " timed out " << std::endl;
+			_removeClient(fd);
+		}
+	}
+}
+
+void	Webserver::_cleanup(void)
+{
+	std::map<int, Client *>::iterator	cit = _clients.begin();
+	while (cit != _clients.end())
+	{
+		if (cit->second)
+			delete cit->second;
+		close(cit->first);
+		++cit;
+	}
+	_clients.clear();
+	std::map<int, Server>::iterator		sit = _server_sockets.begin();
+	while (sit != _server_sockets.end())
+	{
+		close(sit->first);
+		++sit;
+	}
+	_server_sockets.clear();
+	_poll_fds.clear();
+	_running = false;
+}
 void	Webserver::_updatePollEvents(int fd, short events)
 {
 	size_t	i = 0;
-
 	while (i < _poll_fds.size())
 	{
 		if (_poll_fds[i].fd == fd)
 		{
-			_poll_fds[i].events = events;
-			return ;
+			_poll_fds[i].events =  events;
+			break ;
 		}
 		++i;
 	}
+}
+
+void	Webserver::_sendErrorResponse(Client *client, int status, const std::string &status_text)
+{
+	std::string	body = "<html><body><h1>" + Parser::toString(status) + " " + status_text + "</h1></body></html>";
+	std::string	response = _buildResponse(status, status_text, "text/html", body);
+	client->setSendBuffer(response);
+	client->setState(SENDING_HEADERS);
+	_updatePollEvents(client->getFd(), POLLIN | POLLOUT);
+}
+
+std::string	Webserver::_buildResponse(int status, const std::string &status_text, const std::string &content_type, const std::string &body)
+{
+	std::string	response;
+	response += "HTTP/1.1 " + Parser::toString(status) + " " + status_text + "\r\n";
+	response += "Content-Type: " + content_type + "\r\n";
+	response += "Content-Length: " + Parser::toString(body.size()) + "\r\n";
+	response += "Connection: close\r\n\r\n";
+	response += body;
+	return (response);
 }
 
 void	Webserver::_processRequest(int client_fd)
@@ -57,41 +479,40 @@ void	Webserver::_processRequest(int client_fd)
 	Request		&request = client->getRequest();
 	std::string	method = request.getMethod();
 	std::string	uri = request.getUri();
-	std::string	host_header = request.getHeader("Host");
-	Server		*server = _findServer(request.getHeader("Host"));
+	std::string	uri_path = uri;
+	size_t		qmark = uri.find('?');
+	if (qmark != std::string::npos)
+		uri_path = uri.substr(0, qmark);
+	Server		*server = _findServer(request.getHeader("Host"), client->getListenPort());
 	if (!server)
 	{
 		_sendErrorResponse(client, 400, "Bad Request - No server found");
 		return ;
 	}
-	std::cout << "  Available locations:" << std::endl;
-	size_t	i = 0;
-	while (i < server->locations.size())
-		std::cout << "	'" << server->locations[i++].path << "'" << std::endl;
-	std::cout << "  URI: '" << uri << "'" << std::endl;
-	i = 0;
-	while (i < server->locations.size())
-	{
-		std::cout << "	Location: '" << server->locations[i].path << "'" << std::endl;
-		std::cout << "	  uri.find(path) = " << uri.find(server->locations[i].path) << std::endl;
-		++i;
-	}
-	const Location	*location = _router.findLocation(*server, uri);
+	const Location	*location = _router.findLocation(*server, uri_path);
 	if (!location)
 	{
 		_sendErrorResponse(client, 404, "Not Found - No matching location");
 		return ;
 	}
-	std::cout << "  Matched location: '" << location->path << "'" << std::endl;
-	std::cout << "  upload_store: '" << location->upload_store << "'" << std::endl;
 	if (!_router.isMethodAllowed(*location, method))
 	{
 		_sendErrorResponse(client, 405, "Method Not Allowed");
 		return ;
 	}
-	std::string		fs_path = _router.buildPath(*location, uri);
+	std::string		fs_path = _router.buildPath(*location, uri_path);
+
+	size_t			dot = uri_path.find_last_of('.');
+	std::string		ext = (dot != std::string::npos) ? uri_path.substr(dot) : "";
+	std::map<std::string, std::string>::const_iterator	cgi_it = location->cgi_extensions.find(ext);
+
+	if (cgi_it != location->cgi_extensions.end())
+	{
+		_handleCGIRequest(client, *location, fs_path, uri, server, cgi_it->second);
+		return ;
+	}
 	if (method == "GET")
-		_handleGetRequest(client, (Location *)location, fs_path, uri);
+		_handleGetRequest(client, (Location *)location, fs_path, uri_path);
 	else if (method == "POST")
 		_handlePostRequest(client, (Location *)location);
 	else if (method == "DELETE")
@@ -100,103 +521,57 @@ void	Webserver::_processRequest(int client_fd)
 		_handleHeadRequest(client, *location, fs_path);
 	else
 		_sendErrorResponse(client, 405, "Method Not Allowed");
-	const Location *loc = _router.findLocation(*server, uri);
-	if (!loc)
-	{
-		_sendErrorResponse(client, 404, "Not Found - No matching location");
-		return ;
-	}
-	
-	std::cout << "  Matched location: '" << location->path << "'" << std::endl;
-	std::cout << "  upload_store: '" << location->upload_store << "'" << std::endl;
 }
 
-void	Webserver::_cleanup(void)
+Server	*Webserver::_findServer(const std::string &host_header, int listen_port)
 {
-	std::map<int, Client *>::iterator client_it = _clients.begin();
-	while (client_it != _clients.end())
-	{
-		if (client_it->second)
-			delete client_it->second;
-		close(client_it->first);
-		++client_it;
-	}
-	_clients.clear();
+	std::string		hostname = host_header;
+	size_t			colon = hostname.find(':');
 
-	std::map<int, Server>::iterator server_it = _server_sockets.begin();
-	while (server_it != _server_sockets.end())
+	if (colon != std::string::npos)
+		hostname = hostname.substr(0, colon);
+	Server			*first_port_match = NULL;
+	size_t			i = 0;
+	while (i < _configs.size())
 	{
-		close(server_it->first);
-		++server_it;
-	}
-	_server_sockets.clear();
-	_poll_fds.clear();
-	_running = false;
-}
+		Server		&server = _configs[i];
 
-void	Webserver::_checkTimeouts(void)
-{
-	time_t now = time(NULL);
-
-	std::map<int, Client *>::iterator it = _clients.begin();
-	while (it != _clients.end())
-	{
-		Client *client = it->second;
-		if (client && (now - client->getLastActivity() > TIMEOUT_SECONDS))
+		if (server.port == listen_port)
 		{
-			std::cout << "Client " << it->first << " timed out" << std::endl;
-			int		fd	 = it->first;
-			_removeClient(fd);
+			if (!first_port_match)
+				first_port_match = &server;
+			size_t	j = 0;
+			while (j < server.server_names.size())
+			{
+				if (server.server_names[j] == hostname)
+					return (&server);
+				++j;
+			}
 		}
-		++it;
+		++i;
 	}
-}
-void	Webserver::_removeClient(int client_fd)
-{
-	std::vector<struct pollfd>::iterator it = _poll_fds.begin();
-
-	std::cout << "  _removeClient called for fd " << client_fd << std::endl;
-	while (it != _poll_fds.end())
-	{
-		if (it->fd == client_fd)
-		{
-			_poll_fds.erase(it);
-			break ;
-		}
-		++it;
-	}
-	std::map<int, Client*>::iterator it2 = _clients.find(client_fd);
-	if (it2 != _clients.end())
-	{
-		delete it2->second;
-		_clients.erase(it2);
-	}
-	else
-		std::cout << "Client " << client_fd << " not found in _clients map" << std::endl;
-	if (client_fd >= 0)
-	{
-		close(client_fd);
-		std::cout << "Closed fd " << client_fd << std::endl;
-	}
+	if (first_port_match)
+		return (first_port_match);
+	if (!_configs.empty())
+		return (&_configs[0]);
+	return (NULL);
 }
 
-void	Webserver::_handleClientWrite(int client_fd)
+void						Webserver::_handleClientWrite(int client_fd)
 {
-	Client* client = _clients[client_fd];
+	Client	*client = _clients[client_fd];
 
 	if (client->getState() != SENDING_HEADERS && client->getState() != SENDING_BODY)
-		return;
+		return ;
 	const std::string	&send_buffer = client->getSendBuffer();
-	size_t bytes_sent = client->getBytesSent();
-	size_t total_bytes = send_buffer.size();
-
-	size_t chunck_size = std::min((size_t)CHUNK_SIZE, total_bytes - bytes_sent);
-	int sent = send(client_fd, send_buffer.c_str() + bytes_sent, chunck_size, 0);
-
+	size_t	bytes_sent = client->getBytesSent();
+	size_t	total_bytes = send_buffer.size();
+	size_t	chunk_size = std::min((size_t)CHUNK_SIZE, total_bytes - bytes_sent);
+	int		sent = send(client_fd, send_buffer.c_str() + bytes_sent, chunk_size, 0);
 	if (sent <= 0)
 	{
 		if (total_bytes != client->getBytesSent())
-			return;
+			return ;
 		_removeClient(client_fd);
 		return ;
 	}
@@ -215,476 +590,164 @@ void	Webserver::_handleClientWrite(int client_fd)
 	}
 }
 
-void Webserver::_handleClientData(int client_fd)
+void	Webserver::_handleClientData(int client_fd)
 {
-	std::cout << "	_handleClientData() called" << std::endl;
-
-	Client* client = _clients[client_fd];
+	Client	*client = _clients[client_fd];
 	if (!client)
-		return;
-
-	char buffer[BUFFER_SIZE];
-	int bytes = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
-
+		return ;
+	char	buffer[BUFFER_SIZE];
+	int		bytes = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
 	if (bytes <= 0)
 	{
 		if (bytes == 0)
-			std::cout << "  Client " << client_fd << " disconnected" << std::endl;
+			std::cout << "Client " << client_fd << " disconnected" << std::endl;
 		else
 			std::cerr << "recv() error: " << strerror(errno) << std::endl;
 		_removeClient(client_fd);
-		return;
+		return ;
 	}
-
 	buffer[bytes] = '\0';
 	client->appendReadData(buffer, bytes);
 	client->setLastActivity(time(NULL));
-
-	std::cout << " Received " << bytes << " bytes from client " << client_fd << std::endl;
-	std::cout << " client->getState() = " << client->getState() << std::endl;
-
-	// ============================================================
-	// ALWAYS process the request after reading data
-	// ============================================================
 	if (client->getState() == READING_HEADERS)
 	{
-		std::cout << "  Processing request data..." << std::endl;
-
-		// Parse headers (ignore return value)
 		client->getRequest().parseHeaders(client->getReadBuffer());
-		std::cout << "  parseHeaders() returned" << std::endl;
-
-		// ============================================================
-		// Extract body directly from raw data
-		// ============================================================
-		const std::string& raw_data = client->getReadBuffer();
-		size_t header_end = raw_data.find("\r\n\r\n");
-
+		const std::string	&raw_data = client->getReadBuffer();
+		size_t	header_end = raw_data.find("\r\n\r\n");
 		if (header_end != std::string::npos)
 		{
-			std::string body_data = raw_data.substr(header_end + 4);
-			std::cout << "  Body extracted: " << body_data.size() << " bytes" << std::endl;
-			std::cout << "  Body: '" << body_data << "'" << std::endl;
-
-			// Directly set body in Request
+			std::string	body_data = raw_data.substr(header_end + 4);
 			client->getRequest().setBody(body_data);
 		}
 		else
-		{
-			std::cout << "  No body data found" << std::endl;
 			client->getRequest().setBody("");
-		}
-
-		// ============================================================
-		// Call _processRequest directly
-		// ============================================================
-		std::cout << "  Calling _processRequest()" << std::endl;
 		client->setState(PROCESSING);
 		_processRequest(client_fd);
 	}
 }
 
-void Webserver::_acceptNewConnection(int server_fd)
+void	Webserver::_handleGetRequest(Client *client, Location *location, const std::string &fs_path, const std::string &uri)
 {
-	struct sockaddr_in client_addr;
-	socklen_t addr_len = sizeof(client_addr);
-	
-	int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
-	if (client_fd < 0)
-	{
-		if (errno != EWOULDBLOCK && errno != EAGAIN)
-			std::cerr << "accept() failed: " << strerror(errno) << std::endl;
-		return;
-	}
-	
-	std::cout << "Accepted new client: fd " << client_fd << std::endl;
-	int flags = fcntl(client_fd, F_GETFL, 0);
-	if (flags < 0)
-	{
-		std::cerr << "  fcntl F_GETFL failed: " << strerror(errno) << std::endl;
-		close(client_fd);
-		return;
-	}
-	
-	std::cout << "  Client fd " << client_fd << " flags before: " << flags << std::endl;
-	
-	if (fcntl(client_fd, F_SETFL, flags | O_NONBLOCK) < 0)
-	{
-		std::cerr << "  fcntl F_SETFL failed: " << strerror(errno) << std::endl;
-		close(client_fd);
-		return;
-	}
-	std::cout << "  Client fd " << client_fd << " flags after: " << flags << std::endl;
-	if (flags & O_NONBLOCK)
-	{
-		std::cout << "  Client is non-blocking" << std::endl;
-	}
-	else
-	{
-		std::cout << "  Client is STILL blocking!" << std::endl;
-	}
-	Client* client = new Client(client_fd);
-	client->setLastActivity(time(NULL));
-	
-	_clients[client_fd] = client;
-	std::cout << "Stored client " << client_fd << " in _clients map (size: " << _clients.size() << ")" << std::endl;
-	
-	struct pollfd pfd;
-	pfd.fd = client_fd;
-	pfd.events = POLLIN;
-	pfd.revents = 0;
-	_poll_fds.push_back(pfd);
-	
-	std::cout << "Added client fd " << client_fd << " to poll (total: " << _poll_fds.size() << ")" << std::endl;
-	std::cout << "  Now monitoring " << _poll_fds.size() << " fds" << std::endl;
-}
+	std::cout << "_handleGetRequest called" << std::endl;
+	std::cout << "fs_path: " << fs_path << std::endl;
 
-void Webserver::run(void)
-{
-	_setupSockets();
-	_running = true;
-	
-	std::cout << "  Server running on " << _server_sockets.size() << " socket(s)" << std::endl;
-	
-	while (_running)
+	struct stat	st;
+	if (stat(fs_path.c_str(), &st) != 0)
 	{
-		int ret = poll(_poll_fds.data(), _poll_fds.size(), 1000);
-		
-		if (ret < 0)
+		std::cout << "File not found: " << fs_path << std::endl;
+		_sendErrorResponse(client, 404, "Not Found");
+		return ;
+	}
+	std::cout << "File exists! Size: " << st.st_size << " bytes" << std::endl;
+	if (S_ISDIR(st.st_mode))
+	{
+		std::cout << "Is directory, handling autoundex..." << std::endl;
+		if (!location->index.empty())
 		{
-			if (errno == EINTR)
-				continue;
-			std::cerr << "poll() error: " << strerror(errno) << std::endl;
-			break;
-		}
-		
-		std::cout << "  Monitoring " << _poll_fds.size() << " fds: ";
-		for (size_t i = 0; i < _poll_fds.size(); ++i)
-		{
-			std::cout << _poll_fds[i].fd;
-			if (_poll_fds[i].fd == 4) 
-				std::cout << "(client)";
-			if (i + 1 < _poll_fds.size())
-				std::cout << ", ";
-		}
-		std::cout << std::endl;
-		
-		if (ret > 0)
-		{
-			std::cout << "  poll() returned " << ret << " event(s)" << std::endl;
-			
-			for (size_t i = 0; i < _poll_fds.size(); ++i)
+			std::string	index_path = fs_path;
+			if (fs_path[fs_path.size() - 1] != '/')
+				index_path += '/';
+			index_path += location->index;
+			if (stat(index_path.c_str(), &st) == 0 && !S_ISDIR(st.st_mode))
 			{
-				if (_poll_fds[i].revents)
-				{
-					std::cout << "  fd " << _poll_fds[i].fd 
-							  << ": revents = " << _poll_fds[i].revents 
-							  << " (POLLIN=" << POLLIN << ")" << std::endl;
-					
-					if (_poll_fds[i].revents & POLLIN)
-					{
-						std::cout << "  POLLIN on fd " << _poll_fds[i].fd << std::endl;
-						
-						std::map<int, Server>::iterator it = _server_sockets.find(_poll_fds[i].fd);
-						if (it != _server_sockets.end())
-						{
-							std::cout << "  Server socket, accepting..." << std::endl;
-							_acceptNewConnection(_poll_fds[i].fd);
-						}
-						else
-						{
-							std::cout << "  Client socket, calling _handleClientData..." << std::endl;
-							_handleClientData(_poll_fds[i].fd);
-						}
-					}
-					
-					if (_poll_fds[i].revents & POLLOUT)
-						_handleClientWrite(_poll_fds[i].fd);
-					
-					if (_poll_fds[i].revents & (POLLERR | POLLHUP | POLLNVAL))
-						_removeClient(_poll_fds[i].fd);
-				}
+				std::cout << "Found index file: " << index_path << std::endl;
+				_serveFile(client, index_path);
+				return ;
 			}
 		}
-		_checkTimeouts();
+		if (location->autoindex)
+		{
+			std::cout << "Generating directory listing..." << std::endl;
+			std::string	listing = _router.generateDirectoryListing(fs_path, uri);
+			std::string	response = _buildResponse(200, "OK", "text/html", listing);
+			client->setSendBuffer(response);
+			client->setState(SENDING_HEADERS);
+			_updatePollEvents(client->getFd(), POLLIN | POLLOUT);
+			return ;
+		}
+		else
+		{
+			_sendErrorResponse(client, 403, "Forbidden");
+			return ;
+		}
 	}
+	std::cout << "It's a file, calling _serveFile()..." << std::endl;
+	_serveFile(client, fs_path);
 }
 
-void	Webserver::stop(void)
+void	Webserver::_handlePostRequest(Client *client, Location *location)
 {
-	_running = false;
-}
+	std::cout << " _handlePostRequest called" << std::endl;
+	std::cout << " upload_store: '" << location->upload_store << std::endl;
+	std::cout << " upload_store.empty(): " << location->upload_store.empty() << std::endl;
 
-void	Webserver::_createSocket(const Server& config)
-{
-	int		sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	Request		&request = client->getRequest();
+	std::string	body = request.getBody();
 
-	if (sockfd < 0)
-		throw std::runtime_error("Failed to create socket: " + std::string(strerror(errno)));
-	int		opt = 1;
-	std::cout << "Created socket fd: " << sockfd << std::endl;
-
-	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+	if (location->path == "/" || location->upload_store.empty())
 	{
-		close(sockfd);
-		throw std::runtime_error("Failed to set SO_REUSEADDR: " + std::string(strerror(errno)));
-	}
-	int		flags = fcntl(sockfd, F_GETFL, 0);
-	if (flags < 0 || fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0)
-	{
-		close(sockfd);
-		throw std::runtime_error("Failed to set non-blocking mode: " + std::string(strerror(errno)));
-	}
+		std::cout << " No upload_store, returning 200 OK" << std::endl;
 
-	struct sockaddr_in	addr;
-	std::memset(&addr, 0, sizeof(addr));
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(config.port);
-	if (config.host.empty() || config.host == "0.0.0.0")
-		addr.sin_addr.s_addr = INADDR_ANY;
+		std::string	response_body = "<html><body>";
+		response_body += "<h1>POST Received</h1>";
+		response_body += "<p>Method: POST</p>";
+		response_body += "<p>URI: " + request.getUri() + "</p>";
+		response_body += "<p>Body: " + body + "</p>";
+		response_body += "</body></html>";
+
+		std::string	response = _buildResponse(200, "OK", "text/html", response_body);
+		client->setSendBuffer(response);
+		client->setState(SENDING_HEADERS);
+		_updatePollEvents(client->getFd(), POLLIN | POLLOUT);
+		return ;
+	}
+	std::string	content_type = request.getHeader("Content-Type");
+	std::string	filename;
+	std::string	content = body;
+
+	if (content_type.find("multipart/form-data") != std::string::npos)
+	{
+		_handleMultipartUpload(client, *location, content_type, body);
+		return ;
+	}
+	if (content_type.find("apllication/x-www-form-urlencoded") != std::string::npos)
+		filename = "form_data_" + Parser::toString(time(NULL)) + ".txt";
+	else if (content_type.find("text/plain") != std::string::npos)
+		filename = "raw_data_" + Parser::toString(time(NULL)) + ".txt";
 	else
+		filename = "upload_" + Parser::toString(time(NULL)) + ".bin";
+	_handleFileUpload(client, *location, filename, content);
+}
+
+void	Webserver::_handleDeleteRequest(Client *client, const std::string &fs_path)
+{
+	std::cout << "Delete request for: " + fs_path << std::endl;
+	struct stat	st;
+	if (stat(fs_path.c_str(), &st) != 0)
 	{
-			struct in_addr ip_addr;
-			if (!inet_aton(config.host.c_str(), &ip_addr))
-			{
-				close(sockfd);
-				throw std::runtime_error("Invalid IP address: " + config.host);
-			}
-			addr.sin_addr = ip_addr;
+		_sendErrorResponse(client, 404, "Not Found");
+		return ;
 	}
-	std::cout << "config.host = " << config.host << " config.port = " << config.port << std::endl << std::endl;
-	if (bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+	if (S_ISDIR(st.st_mode))
 	{
-		close(sockfd);
-		throw std::runtime_error("Failed to bind port to " + std::to_string(config.port) +
-			": " + std::string (strerror(errno)));
+		_sendErrorResponse(client, 403, "Forbidden = Cannot delete directories");
+		return ;
 	}
-	if (listen(sockfd, BACKLOG) < 0)
+	if (unlink(fs_path.c_str()) != 0) // needs alternative to unlink()
 	{
-			close(sockfd);
-			throw std::runtime_error("Failed to listen on socket: " + std::string(strerror(errno)));
+		std::cerr << "Failed to delete this: " << fs_path << " (" << strerror(errno) << ")" <<std::endl;
+		_sendErrorResponse(client, 500, "Internal Server Error");
+		return ;
 	}
-	std::cout << "Listening on fd " << sockfd << " port " << config.port << std::endl;
-
-	_server_sockets[sockfd] = config;
-	struct pollfd	pfd;
-	pfd.fd = sockfd;
-	pfd.events = POLLIN;
-	pfd.revents = 0;
-	_poll_fds.push_back(pfd);
- std::cout << "Added to poll: fd=" << pfd.fd 
-			  << ", events=" << pfd.events 
-			  << " (POLLIN=" << POLLIN << ")" << std::endl;
-	std::cout << "_poll_fds now has " << _poll_fds.size() << " entries" << std::endl;
-	
-	std::cout << "Added fd " << sockfd << " to poll (total: " << _poll_fds.size() << ")" << std::endl;
-}
-
-void	Webserver::_setupSockets(void)
-{
-	size_t		i = 0;
-
-	while (i < _configs.size())
-		_createSocket(_configs[i++]);
-}
-
-void Webserver::_handleGetRequest(Client *client, Location *location, const std::string &fs_path, const std::string &uri)
-{
-    std::cout << "  _handleGetRequest called" << std::endl;
-    std::cout << "  fs_path: '" << fs_path << "'" << std::endl;
-    
-    struct stat st;
-    if (stat(fs_path.c_str(), &st) != 0)
-    {
-        std::cout << "  File not found: " << fs_path << std::endl;
-        _sendErrorResponse(client, 404, "Not Found");
-        return;
-    }
-    
-    std::cout << "  File exists! Size: " << st.st_size << " bytes" << std::endl;
-    
-    // If it's a directory
-    if (S_ISDIR(st.st_mode))
-    {
-        std::cout << "  Is directory, handling autoindex..." << std::endl;
-        
-        // Check for index file
-        if (!location->index.empty())
-        {
-            std::string index_path = fs_path;
-            if (fs_path[fs_path.size() - 1] != '/')
-                index_path += '/';
-            index_path += location->index;
-            
-            if (stat(index_path.c_str(), &st) == 0 && !S_ISDIR(st.st_mode))
-            {
-                std::cout << "  Found index file: " << index_path << std::endl;
-                _serveFile(client, index_path);
-                return;
-            }
-        }
-        
-        // Check autoindex
-        if (location->autoindex)
-        {
-            std::cout << "  Generating directory listing..." << std::endl;
-            std::string listing = _router.generateDirectoryListing(fs_path, uri);
-            std::string response = _buildResponse(200, "OK", "text/html", listing);
-            client->setSendBuffer(response);
-            client->setState(SENDING_HEADERS);
-            _updatePollEvents(client->getFd(), POLLIN | POLLOUT);
-            return;
-        }
-        else
-        {
-            _sendErrorResponse(client, 403, "Forbidden");
-            return;
-        }
-    }
-    
-    // It's a file - serve it!
-    std::cout << "  It's a file, calling _serveFile..." << std::endl;
-    _serveFile(client, fs_path);
-}
-
-void Webserver::_serveFile(Client *client, const std::string &path)
-{
-    std::cout << "  _serveFile called with path: '" << path << "'" << std::endl;
-    
-    // Open file
-    std::ifstream file(path.c_str(), std::ios::binary);
-    if (!file.is_open())
-    {
-        std::cout << "  File not found!" << std::endl;
-        _sendErrorResponse(client, 404, "Not Found");
-        return;
-    }
-    
-    // Read the ENTIRE file using stringstream
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    std::string content = buffer.str();
-    file.close();
-    
-    std::cout << "  Content size: " << content.size() << " bytes" << std::endl;
-    std::cout << "  Content: '" << content << "'" << std::endl;
-    
-    // Get MIME type
-    std::string mime_type = _router.getMimeType(path);
-    std::cout << "  MIME type: " << mime_type << std::endl;
-    
-    // Build response
-    std::string response = _buildResponse(200, "OK", mime_type, content);
-    std::cout << "  Response size: " << response.size() << " bytes" << std::endl;
-    
-    client->setSendBuffer(response);
-    client->setState(SENDING_HEADERS);
-    _updatePollEvents(client->getFd(), POLLIN | POLLOUT);
-}
-
-std::string	Webserver::_buildResponse(int status, const std::string &status_text, const std::string &content_type, const std::string &body)
-{
-	std::cout << "  _buildResponse: status=" << status << ", body_size=" << body.size() << std::endl;
-	std::string	response;
-	response += "HTTP/1.1 " + std::to_string(status) + " " + status_text + "\r\n";
-	response += "Content-Type: " + content_type + "\r\n";
-	response += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-	response += "Connection: close\r\n";
-	response += "\r\n";
-	response += body;
-	std::cout << "  Response length: " << response.size() << " bytes" << std::endl;
-	return (response);
-}
-
-void	Webserver::_sendErrorResponse(Client *client, int status, const std::string &status_text)
-{
-	std::string	body = "<html><body><h1>" + std::to_string(status) + " " + status_text + "</h1></body></html>";
-	std::string	response = _buildResponse(status, status_text, "text/html", body);
+	std::cout << "File deleted: " << fs_path << std::endl;
+	std::string	response_body = "<html><body>";
+	response_body += "<h1>204 No Content</h1>";
+	response_body += "<p>File deleted successfully: " + fs_path + "</p>";
+	response_body += "</body></html>";
+	std::string	response = _buildResponse(204, "No Content", "text/html", response_body);
 	client->setSendBuffer(response);
 	client->setState(SENDING_HEADERS);
 	_updatePollEvents(client->getFd(), POLLIN | POLLOUT);
-}
-
-Server	*Webserver::_findServer(const std::string &host_header)
-{
-	std::string	hostname = host_header;
-	size_t		colon = hostname.find(':');
-	size_t		i = 0;
-	if (host_header.empty())
-	{
-		if (!_configs.empty())
-			return (&_configs[0]);
-		return (NULL);
-	}
-	if (colon != std::string::npos)
-		hostname = hostname.substr(0, colon);
-	while (i < _configs.size())
-	{
-		Server	&server = _configs[i];
-		size_t	j = 0;
-		while (j < server.server_names.size())
-		{
-			if (server.server_names[j] == hostname)
-				return (&server);
-			++j;
-		}
-		++i;
-	}
-	if (!_configs.empty())
-		return (&_configs[0]);
-	return (NULL);
-}
-
-void Webserver::_handlePostRequest(Client *client, Location *location)
-{
-    std::cout << "  _handlePostRequest called" << std::endl;
-    std::cout << "  upload_store: '" << location->upload_store << "'" << std::endl;
-    std::cout << "  upload_store.empty(): " << location->upload_store.empty() << std::endl;
-    
-    Request &request = client->getRequest();
-    std::string body = request.getBody();
-    
-    std::cout << "  Body size: " << body.size() << " bytes" << std::endl;
-    std::cout << "  Body content: '" << body << "'" << std::endl;
-    
-    // If root location or no upload_store, return 200 with echo
-    if (location->path == "/" || location->upload_store.empty())
-    {
-        std::cout << "  No upload_store, returning 200 OK with echo" << std::endl;
-        
-        std::string response_body = "<html><body>";
-        response_body += "<h1>POST Received</h1>";
-        response_body += "<p>Method: POST</p>";
-        response_body += "<p>URI: " + request.getUri() + "</p>";
-        response_body += "<p>Body: " + body + "</p>";
-        response_body += "</body></html>";
-        
-        std::string response = _buildResponse(200, "OK", "text/html", response_body);
-        client->setSendBuffer(response);
-        client->setState(SENDING_HEADERS);
-        _updatePollEvents(client->getFd(), POLLIN | POLLOUT);
-        return;
-    }
-    
-    // File upload handling
-    std::string content_type = request.getHeader("Content-Type");
-    std::string filename;
-    std::string content = body;
-    
-    if (content_type.find("multipart/form-data") != std::string::npos)
-    {
-        _handleMultipartUpload(client, *location, content_type, body);
-        return;
-    }
-    
-    if (content_type.find("application/x-www-form-urlencoded") != std::string::npos)
-        filename = "form_data_" + std::to_string(time(NULL)) + ".txt";
-    else if (content_type.find("text/plain") != std::string::npos)
-        filename = "raw_data_" + std::to_string(time(NULL)) + ".txt";
-    else
-        filename = "upload_" + std::to_string(time(NULL)) + ".bin";
-    
-    _handleFileUpload(client, *location, filename, content);
 }
 
 void	Webserver::_handleMultipartUpload(Client *client, const Location &location, const std::string &content_type, const std::string &body)
@@ -733,22 +796,20 @@ void	Webserver::_handleFileUpload(Client *client, const Location &location, cons
 		upload_path += '/';
 	upload_path += filename;
 	std::cout << "Uploading File: " << upload_path << " (" << content.size() << " bytes)" << std::endl;
-
 	std::string	dir_path = location.upload_store;
 	if (dir_path[dir_path.size() - 1] != '/')
 		dir_path += '/';
-
-	struct stat st;
+	struct stat	st;
 	if (stat(dir_path.c_str(), &st) != 0)
 	{
-		if (mkdir(dir_path.c_str(), 0755) != 0 && errno != EEXIST) // need to implemnt alternative to checking errno
+		if (mkdir(dir_path.c_str(), 0755) != 0 && errno != EEXIST) // needs alternative to checking errno
 		{
 			std::cerr << "Failed to open file for writing: " << upload_path << std::endl;
 			_sendErrorResponse(client, 500, "Internal Server Error");
 			return ;
 		}
 	}
-	std::ofstream		file(upload_path.c_str(), std::ios::binary);
+	std::ofstream	file(upload_path.c_str(), std::ios::binary);
 	if (!file.is_open())
 	{
 		std::cerr << "Failed to open file for writing: " << upload_path << std::endl;
@@ -761,40 +822,9 @@ void	Webserver::_handleFileUpload(Client *client, const Location &location, cons
 	std::string	response_body = "<html><body>";
 	response_body += "<h1>201 Created</h1>";
 	response_body += "<p>File uploaded successfully: " + filename + "</p>";
-	response_body += "<p>Size: " + std::to_string(content.size()) + " bytes</p>";
+	response_body += "<p> Size: " + Parser::toString(content.size()) + " bytes</p>";
 	response_body += "</body></html>";
 	std::string	response = _buildResponse(201, "Created", "text/html", response_body);
-	client->setSendBuffer(response);
-	client->setState(SENDING_HEADERS);
-	_updatePollEvents(client->getFd(), POLLIN | POLLOUT);
-}
-
-void	Webserver::_handleDeleteRequest(Client *client, const std::string &fs_path)
-{
-	std::cout << "Delete request for: " << fs_path << std::endl;
-	struct stat	st;
-	if (stat(fs_path.c_str(), &st) != 0)
-	{
-		_sendErrorResponse(client, 404,  "Not Found");
-		return ;
-	}
-	if (S_ISDIR(st.st_mode))
-	{
-		_sendErrorResponse(client, 403, "Forbidden - Cannot delete directories");
-		return ;
-	}
-	if (unlink(fs_path.c_str()) != 0) // need alternative to unlink()
-	{
-		std::cerr << "Failed to delete this: " << fs_path << " (" << strerror(errno) << ")" << std::endl;
-		_sendErrorResponse(client, 500, "Internal Server Error");
-		return ;
-	}
-	std::cout << "File deleted: " << fs_path << std::endl;
-	std::string response_body = "<html><body>";
-	response_body += "<h1>204 No Content</h1>";
-	response_body += "<p>File deleted successfully: " + fs_path + "</p>";
-	response_body += "</body></html>";
-	std::string	response = _buildResponse(204, "No Content", "text/html", response_body);
 	client->setSendBuffer(response);
 	client->setState(SENDING_HEADERS);
 	_updatePollEvents(client->getFd(), POLLIN | POLLOUT);
@@ -822,7 +852,7 @@ void	Webserver::_handleHeadRequest(Client *client, const Location &location, con
 		{
 			response += "HTTP/1.1 200 OK\r\n";
 			response += "Content-Type: " + _router.getMimeType(index_path) + "\r\n";
-			response += "Content-Length: " + std::to_string(st.st_size) + "\r\n";
+			response += "Content-Length: " + Parser::toString(st.st_size) + "\r\n";
 			response += "Connection: close\r\n";
 			response += "\r\n";
 			client->setSendBuffer(response);
@@ -835,7 +865,7 @@ void	Webserver::_handleHeadRequest(Client *client, const Location &location, con
 	{
 		response += "HTTP/1.1 200 OK\r\n";
 		response += "Content-Type: " + _router.getMimeType(fs_path) + "\r\n";
-		response += "Content-Length: " + std::to_string(st.st_size) + "\r\n";
+		response += "Content-Length: " + Parser::toString(st.st_size) + "\r\n";
 		response += "Connection: close\r\n";
 		response += "\r\n";
 	}
@@ -843,4 +873,67 @@ void	Webserver::_handleHeadRequest(Client *client, const Location &location, con
 	client->setState(SENDING_HEADERS);
 	_updatePollEvents(client->getFd(), POLLIN | POLLOUT);
 	return ;
+}
+
+void	Webserver::_handleCGIRequest(Client *client, const Location &location,
+			const std::string &script_path, const std::string &uri, Server *server,
+			const std::string &interpreter)
+{
+	struct stat st;
+	if (stat(script_path.c_str(), &st) != 0)
+	{
+		_sendErrorResponse(client, 404, "Not Found");
+		return ;
+	}
+	if (S_ISDIR(st.st_mode))
+	{
+		_sendErrorResponse(client, 403, "Forbidden - CGI path is a directory");
+		return ;
+	}
+	CGIHandler	*cgi = new CGIHandler();
+	std::string server_name = server->server_names.empty() ? server->host : server->server_names[0];
+	std::cout << "Starting CGI " << script_path << " via " << interpreter << std::endl;
+	if (!cgi->start(client->getRequest(), location, script_path, uri, server_name, server->port, interpreter))
+	{
+		delete cgi;
+		_sendErrorResponse(client, 500, "Internal Server Errror - CGI failed to start");
+		return ;
+	}
+	client->setCgi(cgi);
+	int	in_fd = cgi->getInputFd();
+	if (in_fd >= 0)
+	{
+		struct pollfd	pfd = {in_fd, POLLOUT, 0};
+		_poll_fds.push_back(pfd);
+		_cgi_fd_to_client[in_fd] = client->getFd();
+		client->setState(CGI_WRITING);
+	}
+	else
+		client->setState(CGI_READING);
+
+	int	out_fd = cgi->getOutputFd();
+	struct pollfd	pfd_out = {out_fd, POLLIN, 0};
+	_poll_fds.push_back(pfd_out);
+	_cgi_fd_to_client[out_fd] = client->getFd();
+
+	_updatePollEvents(client->getFd(), 0);
+}
+
+void	Webserver::_serveFile(Client *client, const std::string &path)
+{
+	std::ifstream	file(path.c_str(), std::ios::binary);
+	if (!file.is_open())
+	{
+		_sendErrorResponse(client, 404, "Not Found");
+		return ;
+	}
+	std::stringstream	buffer;
+	buffer << file.rdbuf();
+	std::string	content = buffer.str();
+	file.close();
+	std::string mime_type = _router.getMimeType(path);
+	std::string	response = _buildResponse(200, "OK", mime_type, content);
+	client->setSendBuffer(response);
+	client->setState(SENDING_HEADERS);
+	_updatePollEvents(client->getFd(), POLLIN | POLLOUT);
 }

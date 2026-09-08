@@ -13,8 +13,9 @@ Response::Response(const Response &other)
 
 Response	&Response::operator=(const Response &other)
 {
-	std::cout << "Response assignment operator called\n";
-	(void) other;
+	_status_line = other._status_line;
+	_headers = other._headers;
+	_body = other._body;
 	return (*this);
 }
 
@@ -48,8 +49,8 @@ const std::string	&Response::getBody(void) const
 std::string	Response::build(void) const
 {
 	std::string	result;
-	std::map<std::string, std::string>::const_iterator it = _headers.begin();
-
+	std::map<std::string, std::string>::const_iterator	it = _headers.begin();
+	
 	result += _status_line + "\r\n";
 	while (it != _headers.end())
 	{

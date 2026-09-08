@@ -1,15 +1,14 @@
 #pragma once
-#include "webserv.hpp"
 
 struct	Location;
-class	Server;
+struct	Server;
 
 class	Router
 {
 	public:
 		Router(void);
 		Router(const Router &other);
-		Router &operator=(const Router &other);
+		Router	&operator=(const Router &other);
 		~Router(void);
 
 		const Location	*findLocation(const Server &server, const std::string &uri);
