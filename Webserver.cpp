@@ -451,11 +451,61 @@ void	Webserver::_updatePollEvents(int fd, short events)
 
 void	Webserver::_sendErrorResponse(Client *client, int status, const std::string &status_text)
 {
+	// Check if there's a custom error page configured for this status
+	std::string	errorPagePath = _getErrorPagePath(client, status);
+	if (!errorPagePath.empty())
+	{
+		// Try to serve the custom error page
+		std::ifstream	file(errorPagePath.c_str(), std::ios::binary);
+		if (file.is_open())
+		{
+			std::stringstream	buffer;
+			buffer << file.rdbuf();
+			std::string	content = buffer.str();
+			file.close();
+
+			std::string	mimeType = _router.getMimeType(errorPagePath);
+			if (mimeType.empty())
+				mimeType = "text/html";
+
+			std::string	response = _buildResponse(status, status_text, mimeType, content);
+			client->setSendBuffer(response);
+			client->setState(SENDING_HEADERS);
+			_updatePollEvents(client->getFd(), POLLIN | POLLOUT);
+			return ;
+		}
+		// If file doesn't fall back to default error response
+	}
+
+	// Default error response (fallback)
 	std::string	body = "<html><body><h1>" + Parser::toString(status) + " " + status_text + "</h1></body></html>";
 	std::string	response = _buildResponse(status, status_text, "text/html", body);
 	client->setSendBuffer(response);
 	client->setState(SENDING_HEADERS);
 	_updatePollEvents(client->getFd(), POLLIN | POLLOUT);
+}
+
+std::string	Webserver::_getErrorPagePath(Client *client, int status)
+{
+	// Find the server configuration for this client
+	if (!client)
+		return "";
+
+	std::string	hostHeader = client->getRequest().getHeader("Host");
+	int listenPort = client->getListenPort();
+	Server		*server = _findServer(hostHeader, listenPort);
+	if (!server)
+		return "";
+
+	// Look for error page in server configuration
+	std::map<int, std::string>::const_iterator	it = server->error_pages.find(status);
+	if (it != server->error_pages.end())
+	{
+		// Return the error page path (it->second)
+		return it->second;
+	}
+
+	return "";
 }
 
 std::string	Webserver::_buildResponse(int status, const std::string &status_text, const std::string &content_type, const std::string &body)
@@ -495,6 +545,56 @@ void	Webserver::_processRequest(int client_fd)
 		_sendErrorResponse(client, 404, "Not Found - No matching location");
 		return ;
 	}
+
+	// Check return_redirect first
+	if (!location->return_redirect.empty())
+	{
+		// Parse redirect: "STATUS_CODE URL"
+		std::istringstream iss(location->return_redirect);
+		int status_code;
+		std::string url;
+		iss >> status_code >> url;
+
+		if (status_code > 0 && !url.empty())
+		{
+			std::string response = "HTTP/1.1 " + Parser::toString(status_code) + " ";
+			switch (status_code)
+			{
+				case 301: response += "Moved Permanently"; break;
+				case 302: response += "Found"; break;
+				case 303: response += "See Other"; break;
+				case 307: response += "Temporary Redirect"; break;
+				case 308: response += "Permanent Redirect"; break;
+				default: response += "Redirect"; break;
+			}
+			response += "\r\nLocation: " + url + "\r\n";
+			response += "Content-Length: 0\r\n";
+			response += "Connection: close\r\n\r\n";
+
+			client->setSendBuffer(response);
+			client->setState(SENDING_HEADERS);
+			_updatePollEvents(client->getFd(), POLLIN | POLLOUT);
+			return;
+		}
+	}
+
+	// Check client_max_body_size for POST requests
+	if (method == "POST" && location->client_max_body_size > 0)
+	{
+		std::string content_length_str = request.getHeader("Content-Length");
+		if (!content_length_str.empty())
+		{
+			size_t content_length = std::atol(content_length_str.c_str());
+			if (content_length > location->client_max_body_size)
+			{
+				_sendErrorResponse(client, 413, "Payload Too Large");
+				return;
+			}
+		}
+		// Note: Without Content-Length (chunked encoding), we can't check size here
+		// For simplicity, we rely on the body size check after reading in specific handlers
+	}
+
 	if (!_router.isMethodAllowed(*location, method))
 	{
 		_sendErrorResponse(client, 405, "Method Not Allowed");

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Management - Webserv</title>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="logo">📁</div>
+        <h1>File Management</h1>
+        <p class="subtitle">Upload, view, and manage files on the server</p>
+
+        <div class="btn-grid">
+            <a href="/" class="btn btn-primary">← Home</a>
+            <a href="/files/" class="btn btn-primary">📁 File Management</a>
+            <a href="/api/" class="btn btn-secondary">📋 API Server</a>
+        </div>
+
+        <div class="upload-section">
+            <h2>Upload a File</h2>
+            <form id="upload-form" enctype="multipart/form-data">
+                <label class="file-input-label">
+                    <span class="file-input-text">Choose File</span>
+                    <input type="file" name="file" id="file-input" accept=".txt,.html,.css,.js,.jpg,.png">
+                </label>
+                <button type="submit" class="btn btn-primary">Upload File</button>
+            </form>
+            <div id="upload-status"></div>
+        </div>
+
+        <div class="files-section">
+            <h2>Current Files</h2>
+            <div id="file-listing">
+                <p>Loading files...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const uploadForm = document.getElementById('upload-form');
+            const fileInput = document.getElementById('file-input');
+            const statusDiv = document.getElementById('upload-status');
+            const fileInputLabel = fileInput.parentElement; // the label element
+
+            uploadForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const file = fileInput.files[0];
+
+                if (!file) {
+                    statusDiv.textContent = 'Please select a file to upload';
+                    statusDiv.className = 'error';
+                    return;
+                }
+
+                statusDiv.textContent = 'Uploading...';
+                statusDiv.className = '';
+
+                const formData = new FormData();
+                formData.append('file', file);
+
+                try {
+                    const response = await fetch('/files/', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (response.ok) {
+                        const responseText = await response.text();
+                        // Extract filename from response like: "File uploaded successfully: upload_123456789.bin"
+                        const match = responseText.match(/File uploaded successfully:\s*(\S+)/);
+                        const uploadedFilename = match ? match[1] : null;
+                        
+                        if (uploadedFilename) {
+                            statusDiv.textContent = 'File uploaded successfully!';
+                            statusDiv.className = 'success';
+                            fileInput.value = '';
+                            fileInputLabel.classList.remove('file-selected');
+                            loadFiles();
+                        } else {
+                            statusDiv.textContent = 'Upload completed but could not determine filename';
+                            statusDiv.className = 'error';
+                        }
+                    } else {
+                        statusDiv.textContent = 'Upload failed: ' + response.statusText;
+                        statusDiv.className = 'error';
+                    }
+                } catch (error) {
+                    statusDiv.textContent = 'Upload error: ' + error.message;
+                    statusDiv.className = 'error';
+                }
+            });
+
+            document.addEventListener('click', (e) => {
+                if (e.target.classList.contains('delete-btn')) {
+                    const filePath = e.target.getAttribute('data-file');
+                    if (confirm(`Delete file "${filePath}"? This action cannot be undone.`)) {
+                        fetch(filePath, { method: 'DELETE' })
+                            .then(response => {
+                                if (response.ok) {
+                                    loadFiles();
+                                } else {
+                                    alert('Delete failed: ' + response.statusText);
+                                }
+                            })
+                            .catch(error => {
+                                alert('Delete error: ' + error.message);
+                            });
+                    }
+                }
+            });
+
+            loadFiles();
+
+            fileInput.addEventListener('change', () => {
+                statusDiv.textContent = '';
+                statusDiv.className = '';
+                // Update label text to show selected file name
+                const labelText = fileInputLabel.querySelector('.file-input-text');
+                if (fileInput.files.length > 0) {
+                    labelText.textContent = fileInput.files[0].name.length > 20 ? 
+                        fileInput.files[0].name.substring(0, 17) + '...' : 
+                        fileInput.files[0].name;
+                    // Add tooltip with full filename on hover
+                    labelText.title = fileInput.files[0].name;
+                    // Add visual feedback class
+                    fileInputLabel.classList.add('file-selected');
+                } else {
+                    labelText.textContent = 'Choose File';
+                    fileInputLabel.classList.remove('file-selected');
+                }
+            });
+
+            async function loadFiles() {
+                try {
+                    // Fetch from uploads directory to get actual file listing
+                    const response = await fetch('/files/uploads/');
+                    const text = await response.text();
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(text, 'text/html');
+                    const links = Array.from(doc.querySelectorAll('a'));
+                    // Extract just the filename from the href (remove the path)
+                    const files = links
+                        .map(link => {
+                            const href = link.getAttribute('href');
+                            // Extract filename from href like "/files/uploads/filename.txt" -> "filename.txt"
+                            const filename = href.split('/').pop();
+                            return filename;
+                        })
+                        .filter(filename => filename && filename !== '..' && filename !== '.' && !filename.includes('delete_me.txt'));
+
+                    const fileListing = document.getElementById('file-listing');
+
+                    if (files.length === 0) {
+                        fileListing.innerHTML = '<p>No files uploaded yet.</p>';
+                        return;
+                    }
+
+                    fileListing.innerHTML = '<ul class="file-list">' + files.map(file => {
+                        // Construct the full path for the delete button
+                        const filePath = `/files/uploads/${file}`;
+                        // Show friendly name (truncate if too long) but keep full name in tooltip
+                        const displayName = file.length > 25 ? file.substring(0, 22) + '...' : file;
+                        return `
+                            <li>
+                                <span title="${file}">${displayName}</span>
+                                <button class="delete-btn" data-file="${filePath}">Delete</button>
+                            </li>
+                        `;
+                    }).join('') + '</ul>';
+                } catch (error) {
+                    fileListing.innerHTML = `<p>Failed to load files: ${error.message}</p>`;
+                }
+            }
+        });
+    </script>
+</body>
+</html>

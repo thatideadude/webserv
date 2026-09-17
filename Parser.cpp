@@ -174,6 +174,17 @@ void	Parser::_parseLocation(Location &location, const std::string &line)
 	}
 	if (tokens[0] == "upload_store")
 		location.upload_store = tokens[1].substr(0, tokens[1].length() - 1);
+	if (tokens[0] == "return_redirect" && tokens.size() >= 3)
+	{
+		// Join all tokens after the first one (to handle URLs with spaces? though unlikely)
+		std::string redirect_value;
+		for (size_t i = 1; i < tokens.size(); ++i)
+		{
+			if (i > 1) redirect_value += " ";
+			redirect_value += _stripSemicolon(tokens[i]);
+		}
+		location.return_redirect = redirect_value;
+	}
 }
 
 bool	Parser::_isComment(const std::string &line) const

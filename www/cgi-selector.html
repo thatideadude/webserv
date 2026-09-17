@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CGI Script Selector - Webserv</title>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="logo">🐍</div>
+        <h1>CGI Script Selector</h1>
+        <p class="subtitle">Choose a CGI script to execute</p>
+
+        <div id="selector">
+            <label for="script-input">Enter CGI script path (e.g., envtest.py):</label>
+            <input type="text" id="script-input" placeholder="envtest.py" required>
+            <br><br>
+            <button id="run-button" class="btn btn-primary">Run Script</button>
+        </div>
+
+        <div class="info"></div>
+
+        <div class="btn-grid">
+            <a href="/" class="btn btn-primary">← Home</a>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('run-button').addEventListener('click', function() {
+            const input = document.getElementById('script-input');
+            const script = input.value.trim();
+            if (script) {
+                window.location.href = 'http://localhost:8083/cgi-bin/' + script;
+            } else {
+                alert('Please enter a script path.');
+            }
+        });
+
+        // Allow Enter key to trigger the button
+        document.getElementById('script-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('run-button').click();
+            }
+        });
+    </script>
+</body>
+</html>

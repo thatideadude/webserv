@@ -62,4 +62,5 @@ class	Webserver
 		void						_handleCGIWrite(int fd);
 		void						_finishCGI(int client_fd);
 		void						_removeCGIFd(int fd);
+		std::string					_getErrorPagePath(Client *client, int status);
 };
