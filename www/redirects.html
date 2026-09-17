@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redirect Tests - Webserv</title>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="logo">🔄</div>
+        <h1>Redirect Tests</h1>
+        <p class="subtitle">Test all HTTP redirect status codes</p>
+
+        <div class="pages-section">
+            <h2>Redirect Test Links</h2>
+            <div class="btn-grid" style="max-width: 600px;">
+                <a href="/" class="btn btn-primary">← Home</a>
+                <a href="/redirect-301" class="btn btn-secondary">🔁 Test 301 Redirect</a>
+                <a href="/redirect-302" class="btn btn-secondary">🔁 Test 302 Redirect</a>
+                <a href="/redirect-303" class="btn btn-secondary">🔁 Test 303 Redirect</a>
+                <a href="/redirect-307" class="btn btn-secondary">🔁 Test 307 Redirect</a>
+                <a href="/redirect-308" class="btn btn-secondary">🔁 Test 308 Redirect</a>
+            </div>
+        </div>
+
+        <div class="pages-section">
+            <h2>Expected Results</h2>
+            <p>Each button should redirect to /redirect-target with the corresponding status code:</p>
+            <ul style="text-align: left; max-width: 500px; margin: 0 auto;">
+                <li>301: Moved Permanently</li>
+                <li>302: Found</li>
+                <li>303: See Other</li>
+                <li>307: Temporary Redirect</li>
+                <li>308: Permanent Redirect</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>

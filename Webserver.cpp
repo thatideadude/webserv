@@ -483,6 +483,8 @@ void	Webserver::_sendErrorResponse(Client *client, int status, const std::string
 	client->setSendBuffer(response);
 	client->setState(SENDING_HEADERS);
 	_updatePollEvents(client->getFd(), POLLIN | POLLOUT);
+
+	return ;
 }
 
 std::string	Webserver::_getErrorPagePath(Client *client, int status)
@@ -716,13 +718,38 @@ void	Webserver::_handleClientData(int client_fd)
 		size_t	header_end = raw_data.find("\r\n\r\n");
 		if (header_end != std::string::npos)
 		{
-			std::string	body_data = raw_data.substr(header_end + 4);
-			client->getRequest().setBody(body_data);
+			if (client->getRequest().isChunked())
+			{
+				if (client->getRequest().parseBody(raw_data))
+				{
+					client->setState(PROCESSING);
+					_processRequest(client_fd);
+				}
+				else
+					client->setState(READING_BODY);
+			}
+			else
+			{
+				std::string	body_data = raw_data.substr(header_end + 4);
+				client->getRequest().setBody(body_data);
+				client->setState(PROCESSING);
+				_processRequest(client_fd);
+			}
 		}
 		else
+		{
 			client->getRequest().setBody("");
-		client->setState(PROCESSING);
-		_processRequest(client_fd);
+			client->setState(PROCESSING);
+			_processRequest(client_fd);
+		}
+	}
+	else if (client->getState() == READING_BODY)
+	{
+		if (client->getRequest().parseBody(client->getReadBuffer()))
+		{
+			client->setState(PROCESSING);
+			_processRequest(client_fd);
+		}
 	}
 }
 
@@ -810,7 +837,7 @@ void	Webserver::_handlePostRequest(Client *client, Location *location)
 		_handleMultipartUpload(client, *location, content_type, body);
 		return ;
 	}
-	if (content_type.find("apllication/x-www-form-urlencoded") != std::string::npos)
+	if (content_type.find("application/x-www-form-urlencoded") != std::string::npos)
 		filename = "form_data_" + Parser::toString(time(NULL)) + ".txt";
 	else if (content_type.find("text/plain") != std::string::npos)
 		filename = "raw_data_" + Parser::toString(time(NULL)) + ".txt";

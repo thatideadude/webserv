@@ -23,7 +23,6 @@
 #include <dirent.h>
 #include <signal.h>
 #include <errno.h>
-#include <dirent.h>
 
 #include "Parser.hpp"
 #include "CGIHandler.hpp"

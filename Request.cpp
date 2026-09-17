@@ -92,6 +92,9 @@ bool	Request::parseHeaders(const std::string &raw_data)
 	std::string	cl = getHeader("content-length");
 	if (!cl.empty())
 		_content_length = std::atol(cl.c_str());
+	std::string	te = getHeader("transfer-encoding");
+	if (!te.empty() && te.find("chunked") != std::string::npos)
+		_chunked = true;
 	_headers_parsed = true;
 	return (true);
 }
@@ -131,12 +134,42 @@ bool	Request::parseBody(const std::string &raw_data)
 			std::cout << "Body content: '" << _body << "'" << std::endl;
 			return (true);
 		}
+		return (false);
 	}
 	else if (_chunked)
 	{
-		_body += body_data;
-		_body_parsed = true;
-		return (true);
+		if (_body_bytes_read == 0)
+			_body.clear();
+		while (_body_bytes_read < body_data.size())
+		{
+			size_t	crlf = body_data.find("\r\n", _body_bytes_read);
+			if (crlf == std::string::npos)
+				return (false);
+			std::string	size_str = body_data.substr(_body_bytes_read, crlf - _body_bytes_read);
+			size_t	chunk_size = 0;
+			for (size_t i = 0; i < size_str.size(); ++i)
+			{
+				char	c = size_str[i];
+				chunk_size *= 16;
+				if (c >= '0' && c <= '9')
+					chunk_size += c - '0';
+				else if (c >= 'a' && c <= 'f')
+					chunk_size += c - 'a' + 10;
+				else if (c >= 'A' && c <= 'F')
+					chunk_size += c - 'A' + 10;
+			}
+			if (chunk_size == 0)
+			{
+				_body_parsed = true;
+				return (true);
+			}
+			size_t	data_start = crlf + 2;
+			if (data_start + chunk_size + 2 > body_data.size())
+				return (false);
+			_body.append(body_data.substr(data_start, chunk_size));
+			_body_bytes_read = data_start + chunk_size + 2;
+		}
+		return (false);
 	}
 	return (true);
 }
@@ -187,7 +220,7 @@ std::string	Request::getHeader(const std::string &key) const
 
 	while (i < key_lower.size())
 	{
-		key_lower = Parser::toLower(key_lower[i]);
+		key_lower[i] = Parser::toLower(key_lower[i]);
 		++i;
 	}
 	std::map<std::string, std::string>::const_iterator	it = _headers.find(key_lower);
@@ -316,7 +349,7 @@ void	Request::_parseUri(void)
 	else
 	{
 		_path = raw_uri;
-		_query_string = raw_uri.substr(qmark + 1);
+		_query_string = "";
 	}
 	_decoded_uri = decodeUri(_path);
 }
