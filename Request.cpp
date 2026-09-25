@@ -1,6 +1,6 @@
 #include "webserv.hpp"
 
-Request::Request(void) : _headers_parsed(false), _body_parsed(false), _content_length(0), _chunked(false), _body_bytes_read(0)
+Request::Request(void) : _headers_parsed(false), _body_parsed(false), _content_length(0), _chunked(false), _malformed(false), _body_bytes_read(0)
 {
 	std::cout << "Request default constructor called\n";
 }
@@ -146,6 +146,14 @@ bool	Request::parseBody(const std::string &raw_data)
 			if (crlf == std::string::npos)
 				return (false);
 			std::string	size_str = body_data.substr(_body_bytes_read, crlf - _body_bytes_read);
+			size_t	separator = size_str.find(';');
+			if (separator != std::string::npos)
+				size_str = size_str.substr(0, separator);
+			if (size_str.empty())
+			{
+				_malformed = true;
+				return (false);
+			}
 			size_t	chunk_size = 0;
 			for (size_t i = 0; i < size_str.size(); ++i)
 			{
@@ -157,15 +165,33 @@ bool	Request::parseBody(const std::string &raw_data)
 					chunk_size += c - 'a' + 10;
 				else if (c >= 'A' && c <= 'F')
 					chunk_size += c - 'A' + 10;
+				else
+				{
+					_malformed = true;
+					return (false);
+				}
 			}
 			if (chunk_size == 0)
 			{
+				size_t	trailer_start = crlf + 2;
+				if (body_data.size() < trailer_start + 2)
+					return (false);
+				if (body_data.substr(trailer_start, 2) != "\r\n")
+				{
+					_malformed = true;
+					return (false);
+				}
 				_body_parsed = true;
 				return (true);
 			}
 			size_t	data_start = crlf + 2;
 			if (data_start + chunk_size + 2 > body_data.size())
 				return (false);
+			if (body_data.substr(data_start + chunk_size, 2) != "\r\n")
+			{
+				_malformed = true;
+				return (false);
+			}
 			_body.append(body_data.substr(data_start, chunk_size));
 			_body_bytes_read = data_start + chunk_size + 2;
 		}
@@ -185,6 +211,7 @@ void	Request::clear(void)
 	_body_parsed = false;
 	_content_length = 0;
 	_chunked = 0;
+	_malformed = false;
 	_body_bytes_read = 0;
 }
 
@@ -242,6 +269,11 @@ size_t	Request::getContentLength(void) const
 bool	Request::isChunked(void) const
 {
 	return (_chunked);
+}
+
+bool	Request::isMalformed(void) const
+{
+	return (_malformed);
 }
 
 void	Request::setBody(const std::string &body)

@@ -36,6 +36,7 @@ class	CGIHandler
 
 		bool								finalize(void);
 		void								kill(void);
+		void								forgetFd(int fd);
 		
 		const std::string					&getRawOutput(void) const;
 		const std::string					getParsedBody(void) const;

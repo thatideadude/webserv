@@ -50,5 +50,6 @@ class	Parser
 		void							_addServers(Server &server, const std::string &line);
 		void							_addErrors(Server &server, const std::string &line);
 		void							_addBodySize(Server &server, const std::string &str);
+		size_t							_parseSize(const std::string &value);
 		std::string						_stripSemicolon(std::string str);
 };

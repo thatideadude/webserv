@@ -60,7 +60,7 @@ std::string	Parser::toString(int nbr)
 char	Parser::toLower(char c)
 {
 	if (c >= 'A' && c <= 'Z')
-		c -= 'A';
+	c += 'a' - 'A';
 	return (c);
 }
 
@@ -109,7 +109,7 @@ void	Parser::_parse(std::string const &file)
 				{
 					Location					location;
 					std::vector<std::string>	tokens = _split(str);
-					location.client_max_body_size = 0;
+					location.client_max_body_size = server.client_max_body_size;
 					if (tokens.size() >= 2)
 						location.path = tokens[1];
 					while (std::getline(stream, str))
@@ -165,7 +165,7 @@ void	Parser::_parseLocation(Location &location, const std::string &line)
 	if (tokens[0] == "index")
 		location.index = _stripSemicolon(tokens.back());
 	if (tokens[0] == "client_max_body_size")
-		location.client_max_body_size = std::atoi((tokens.back()).c_str());
+		location.client_max_body_size = _parseSize(tokens.back());
 	if (tokens[0] == "cgi_pass" && tokens.size() > 2)
 	{
 		std::string	extension = tokens[1];
@@ -242,7 +242,32 @@ void	Parser::_addBodySize(Server &server, const std::string &line)
 	if (vector. empty())
 		return ;
 	std::string last = vector.back();
-	server.client_max_body_size = std::atoi(last.c_str());
+	server.client_max_body_size = _parseSize(last);
+}
+
+size_t	Parser::_parseSize(const std::string &value)
+{
+	std::string number = _stripSemicolon(value);
+	if (number.empty())
+		return (0);
+	size_t multiplier = 1;
+	char suffix = number[number.size() - 1];
+	if (suffix == 'K' || suffix == 'k')
+	{
+		multiplier = 1024;
+		number.erase(number.size() - 1);
+	}
+	else if (suffix == 'M' || suffix == 'm')
+	{
+		multiplier = 1024 * 1024;
+		number.erase(number.size() - 1);
+	}
+	else if (suffix == 'G' || suffix == 'g')
+	{
+		multiplier = 1024 * 1024 * 1024;
+		number.erase(number.size() - 1);
+	}
+	return (std::atol(number.c_str()) * multiplier);
 }
 
 std::vector<Server>	&Parser::getServers(void)

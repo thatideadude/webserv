@@ -21,6 +21,7 @@ class	Request
 		bool	hasBody(void) const;
 		size_t	getContentLength(void) const;
 		bool	isChunked(void) const;
+		bool	isMalformed(void) const;
 
 		void	setBody(const std::string &body);
 		void	setMethod(const std::string &method);
@@ -42,6 +43,7 @@ class	Request
 		bool		_body_parsed;
 		size_t		_content_length;
 		bool		_chunked;
+		bool		_malformed;
 		size_t		_body_bytes_read;
 		std::string	_decoded_uri;
 		std::string	_query_string;

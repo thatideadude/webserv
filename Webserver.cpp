@@ -28,6 +28,7 @@ Webserver	&Webserver::operator=(const Webserver &other)
 
 Webserver::~Webserver(void)
 {
+	_cleanup();
 	std::cout << "Webserver destructor called\n";
 }
 
@@ -156,6 +157,7 @@ void Webserver::_createSockets(const Server& config)
 			close(sockfd);
 			throw std::runtime_error("Invalid IP address: " + config.host);
 		}
+		addr.sin_addr = ip_addr;
 	}
 	if (bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
 	{
@@ -326,6 +328,20 @@ void	Webserver::_handleFdError(int fd)
 
 void	Webserver::_removeCGIFd(int fd)
 {
+	std::map<int, int>::iterator	cgi_it = _cgi_fd_to_client.find(fd);
+	bool								close_fd = true;
+	if (cgi_it != _cgi_fd_to_client.end())
+	{
+		std::map<int, Client *>::iterator	client_it = _clients.find(cgi_it->second);
+		if (client_it != _clients.end() && client_it->second->getCgi())
+		{
+			CGIHandler	*cgi = client_it->second->getCgi();
+			if (cgi->getInputFd() != fd && cgi->getOutputFd() != fd)
+				close_fd = false;
+			else
+				cgi->forgetFd(fd);
+		}
+	}
 	std::vector<struct pollfd>::iterator	it = _poll_fds.begin();
 	while (it != _poll_fds.end())
 	{
@@ -336,7 +352,8 @@ void	Webserver::_removeCGIFd(int fd)
 		}
 		++it;
 	}
-	close(fd);
+	if (close_fd)
+		close(fd);
 	_cgi_fd_to_client.erase(fd);
 }
 
@@ -672,8 +689,6 @@ void						Webserver::_handleClientWrite(int client_fd)
 	int		sent = send(client_fd, send_buffer.c_str() + bytes_sent, chunk_size, 0);
 	if (sent <= 0)
 	{
-		if (total_bytes != client->getBytesSent())
-			return ;
 		_removeClient(client_fd);
 		return ;
 	}
@@ -703,8 +718,6 @@ void	Webserver::_handleClientData(int client_fd)
 	{
 		if (bytes == 0)
 			std::cout << "Client " << client_fd << " disconnected" << std::endl;
-		else
-			std::cerr << "recv() error: " << strerror(errno) << std::endl;
 		_removeClient(client_fd);
 		return ;
 	}
@@ -718,6 +731,20 @@ void	Webserver::_handleClientData(int client_fd)
 		size_t	header_end = raw_data.find("\r\n\r\n");
 		if (header_end != std::string::npos)
 		{
+			Request	&request = client->getRequest();
+			std::string	uri_path = request.getUri();
+			size_t	qmark = uri_path.find('?');
+			if (qmark != std::string::npos)
+				uri_path = uri_path.substr(0, qmark);
+			Server	*server = _findServer(request.getHeader("Host"), client->getListenPort());
+			const Location	*location = server ? _router.findLocation(*server, uri_path) : NULL;
+			if (request.getMethod() == "POST" && location
+				&& location->client_max_body_size > 0
+				&& request.getContentLength() > location->client_max_body_size)
+			{
+				_sendErrorResponse(client, 413, "Payload Too Large");
+				return ;
+			}
 			if (client->getRequest().isChunked())
 			{
 				if (client->getRequest().parseBody(raw_data))
@@ -725,15 +752,23 @@ void	Webserver::_handleClientData(int client_fd)
 					client->setState(PROCESSING);
 					_processRequest(client_fd);
 				}
+				else if (client->getRequest().isMalformed())
+					_sendErrorResponse(client, 400, "Bad Request - Malformed chunked body");
 				else
 					client->setState(READING_BODY);
 			}
 			else
 			{
 				std::string	body_data = raw_data.substr(header_end + 4);
-				client->getRequest().setBody(body_data);
-				client->setState(PROCESSING);
-				_processRequest(client_fd);
+				if (client->getRequest().getContentLength() > 0
+					&& body_data.size() < client->getRequest().getContentLength())
+					client->setState(READING_BODY);
+				else
+				{
+					client->getRequest().setBody(body_data);
+					client->setState(PROCESSING);
+					_processRequest(client_fd);
+				}
 			}
 		}
 		else
@@ -750,6 +785,8 @@ void	Webserver::_handleClientData(int client_fd)
 			client->setState(PROCESSING);
 			_processRequest(client_fd);
 		}
+		else if (client->getRequest().isMalformed())
+			_sendErrorResponse(client, 400, "Bad Request - Malformed chunked body");
 	}
 }
 

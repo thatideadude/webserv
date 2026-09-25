@@ -68,8 +68,16 @@ bool	CGIHandler::start(const Request &request, const Location &location, const s
 		close(in_pipe[0]); close(in_pipe[1]);
 		close(out_pipe[0]); close(out_pipe[1]);
  
-		char	**env = _buildEnv(request, location, script_path, uri, server_name, server_port);
-		char	**argv = _buildArgv(interpreter, script_path);
+		size_t	slash = script_path.find_last_of('/');
+		std::string	script_name = script_path;
+		if (slash != std::string::npos)
+		{
+			if (chdir(script_path.substr(0, slash).c_str()) != 0)
+				_exit(1);
+			script_name = script_path.substr(slash + 1);
+		}
+		char	**env = _buildEnv(request, location, script_name, uri, server_name, server_port);
+		char	**argv = _buildArgv(interpreter, script_name);
  
 		execve(argv[0], argv, env);
 		// only reached if execve fails
@@ -109,8 +117,6 @@ bool	CGIHandler::writeToInput(void)
  
 	if (written < 0)
 	{
-		if (errno == EAGAIN || errno == EWOULDBLOCK)
-			return (false);
 		_closeInput();
 		_state = CGI_ERROR;
 		return (true);
@@ -141,11 +147,17 @@ bool	CGIHandler::readFromOutput(void)
 		finalize();
 		return (true);
 	}
-	if (errno == EAGAIN || errno == EWOULDBLOCK)
-		return (false);
 	_closeOutput();
 	_state = CGI_ERROR;
 	return (true);
+}
+
+void	CGIHandler::forgetFd(int fd)
+{
+	if (_input_fd == fd)
+		_input_fd = -1;
+	if (_output_fd == fd)
+		_output_fd = -1;
 }
 
 bool	CGIHandler::finalize(void)
@@ -154,6 +166,8 @@ bool	CGIHandler::finalize(void)
  
 	if (_pid > 0)
 		waitpid(_pid, &status, 0);
+	if (_state != CGI_ERROR && (!WIFEXITED(status) || WEXITSTATUS(status) != 0))
+		_state = CGI_ERROR;
 	if (_state != CGI_ERROR)
 	{
 		_parseOutput();
