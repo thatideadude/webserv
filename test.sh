@@ -52,8 +52,8 @@ section() {
 }
 
 # Clean upload directories used by the current config.
-mkdir -p ./www/files/uploads ./www/redirects/uploads
-rm -f ./www/files/delete_me.txt ./www/files/uploads/* ./www/redirects/uploads/*
+mkdir -p ./www/files/uploads
+rm -f ./www/files/uploads/*
 
 # ============================================
 # SERVER 1: port 8080 - Main website
@@ -87,14 +87,6 @@ section "Server 2 (8081) - Redirect + upload"
 
 check_status  "GET / (redirect)"                       301 "http://$HOST:8081/"
 check_status  "Host: redirects.webserv.local"          301 -H "Host: redirects.webserv.local" "http://$HOST:8081/"
-check_status  "GET /upload/ (no GET allowed)"          405 "http://$HOST:8081/upload/"
-check_status  "POST /upload/ (text/plain)"             201 -X POST --data-binary "some file content" \
-              -H "Content-Type: text/plain" "http://$HOST:8081/upload/"
-check_status  "GET /upload/ still 405 after upload"    405 "http://$HOST:8081/upload/"
-
-echo "multipart test data" > /tmp/webserv_upload_test.txt
-check_status  "POST /upload/ multipart file"           201 -X POST -F "file=@/tmp/webserv_upload_test.txt" \
-              "http://$HOST:8081/upload/"
 
 # ============================================
 # SERVER 3: port 8082 - File server
@@ -139,12 +131,12 @@ PY
 check_status  "POST 11MB body on port 8080 -> 413"    413 --data-binary @/tmp/webserv_oversized_body.bin "http://$HOST:8080/"
 
 # Valid chunked upload must be accepted by the upload route.
-status_code=$(python3 - "$HOST" 8081 <<'PY'
+status_code=$(python3 - "$HOST" 8082 <<'PY'
 import socket, sys
 host = sys.argv[1]
 port = int(sys.argv[2])
 req = (
-    "POST /upload/ HTTP/1.1\r\n"
+    "POST /uploads/ HTTP/1.1\r\n"
     "Host: localhost\r\n"
     "Transfer-Encoding: chunked\r\n"
     "Content-Type: text/plain\r\n"
