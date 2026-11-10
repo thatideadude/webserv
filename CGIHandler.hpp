@@ -2,7 +2,7 @@
 #include "webserv.hpp"
 
 class	Request;
-class	Location;
+struct	Location;
 
 enum	CGIState
 {

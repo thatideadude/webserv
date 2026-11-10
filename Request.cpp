@@ -44,7 +44,7 @@ bool	Request::parseHeaders(const std::string &raw_data)
 	{
 		size_t line_end = header_part.find("\r\n", pos);
 		if (line_end == std::string::npos)
-			break ;
+			line_end = header_part.size();
 		std::string	line = header_part.substr(pos, line_end - pos);
 		pos = line_end + 2;
 		line_count++;
