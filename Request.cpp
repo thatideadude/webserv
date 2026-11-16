@@ -48,14 +48,15 @@ bool	Request::parseHeaders(const std::string &raw_data)
 		std::string	line = header_part.substr(pos, line_end - pos);
 		pos = line_end + 2;
 		line_count++;
-		std::cout << "Line " << line_count << ": '" << line << "'" << std::endl;
+		std::cout << "\tLine " << line_count << ": '" << line << "'" << std::endl;
 		if (line.empty())
 			continue ;
 		if (first_line)
 		{
 			std::istringstream	line_ss(line);
 			line_ss >> _method >> _uri >> _version;
-			std::cout << "Method: " << _method << ", URI: " << _uri << std::endl;
+			_parseUri();
+			std::cout << "\tMethod: " << _method << ", URI: " << _uri << std::endl;
 			first_line = false;
 		}
 		else
@@ -84,7 +85,7 @@ bool	Request::parseHeaders(const std::string &raw_data)
 					++i;
 				}
 				_headers[key] = value;
-				std::cout << "Header: " << key << " = " << value << std::endl;
+				std::cout << "\tHeader: " << key << " = " << value << std::endl;
 			}
 		}
 	}
@@ -213,6 +214,9 @@ void	Request::clear(void)
 	_chunked = 0;
 	_malformed = false;
 	_body_bytes_read = 0;
+	_decoded_uri.clear();
+	_query_string.clear();
+	_path.clear();
 }
 
 const std::string	&Request::getMethod(void) const
@@ -223,6 +227,11 @@ const std::string	&Request::getMethod(void) const
 const std::string	&Request::getUri(void) const
 {
 	return (_uri);
+}
+
+const std::string	&Request::getPath(void) const
+{
+	return (_decoded_uri);
 }
 
 const std::string	&Request::getVersion(void) const
@@ -290,6 +299,7 @@ void	Request::setMethod(const std::string &method)
 void	Request::setUri(const std::string &uri)
 {
 	_uri = uri;
+	_parseUri();
 }
 
 std::string	Request::decodeUri(const std::string &uri) const
@@ -301,15 +311,30 @@ std::string	Request::decodeUri(const std::string &uri) const
 	{
 		if (uri[i] == '%' && i + 2 < uri.length())
 		{
-			char	hex[3] = {uri[i + 1], uri[i + 2], '\0'}; 
-			int		value = std::strtol(hex, NULL, 16);
-			result += static_cast<char>(value);
-			i += 2;
+			int	high = -1;
+			int	low = -1;
+
+			if (uri[i + 1] >= '0' && uri[i + 1] <= '9')
+				high = uri[i + 1] - '0';
+			else if (uri[i + 1] >= 'a' && uri[i + 1] <= 'f')
+				high = uri[i + 1] - 'a' + 10;
+			else if (uri[i + 1] >= 'A' && uri[i + 1] <= 'F')
+				high = uri[i + 1] - 'A' + 10;
+			if (uri[i + 2] >= '0' && uri[i + 2] <= '9')
+				low = uri[i + 2] - '0';
+			else if (uri[i + 2] >= 'a' && uri[i + 2] <= 'f')
+				low = uri[i + 2] - 'a' + 10;
+			else if (uri[i + 2] >= 'A' && uri[i + 2] <= 'F')
+				low = uri[i + 2] - 'A' + 10;
+			if (high >= 0 && low >= 0)
+			{
+				result += static_cast<char>(high * 16 + low);
+				i += 3;
+				continue ;
+			}
 		}
-		else if (uri[i] == '+')
-			result += ' ';
-		else
-			result += uri[i];
+		result += uri[i];
+		++i;
 	}
 	return (result);
 }
@@ -327,6 +352,7 @@ bool	Request::_parseRequestLine(const std::string &line)
 
 	if (_method.empty() || _uri.empty() || _version.empty())
 		return (false);
+	_parseUri();
 	if (_method != "GET" && _method != "POST" && _method != "DELETE"
 			&& _method != "HEAD" && _method != "PUT")
 	{

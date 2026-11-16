@@ -14,6 +14,7 @@ class	Request
 
 		const std::string	&getMethod(void) const;
 		const std::string	&getUri(void) const;
+		const std::string	&getPath(void) const;
 		const std::string	&getVersion(void) const;
 		const std::string	&getBody(void) const;
 		std::string			getHeader(const std::string &key) const;

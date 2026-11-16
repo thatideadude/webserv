@@ -548,10 +548,7 @@ void	Webserver::_processRequest(int client_fd)
 	Request		&request = client->getRequest();
 	std::string	method = request.getMethod();
 	std::string	uri = request.getUri();
-	std::string	uri_path = uri;
-	size_t		qmark = uri.find('?');
-	if (qmark != std::string::npos)
-		uri_path = uri.substr(0, qmark);
+	std::string	uri_path = request.getPath();
 	Server		*server = _findServer(request.getHeader("Host"), client->getListenPort());
 	if (!server)
 	{
@@ -610,8 +607,6 @@ void	Webserver::_processRequest(int client_fd)
 				return;
 			}
 		}
-		// Note: Without Content-Length (chunked encoding), we can't check size here
-		// For simplicity, we rely on the body size check after reading in specific handlers
 	}
 
 	if (!_router.isMethodAllowed(*location, method))
@@ -732,10 +727,7 @@ void	Webserver::_handleClientData(int client_fd)
 		if (header_end != std::string::npos)
 		{
 			Request	&request = client->getRequest();
-			std::string	uri_path = request.getUri();
-			size_t	qmark = uri_path.find('?');
-			if (qmark != std::string::npos)
-				uri_path = uri_path.substr(0, qmark);
+			std::string	uri_path = request.getPath();
 			Server	*server = _findServer(request.getHeader("Host"), client->getListenPort());
 			const Location	*location = server ? _router.findLocation(*server, uri_path) : NULL;
 			if (request.getMethod() == "POST" && location
