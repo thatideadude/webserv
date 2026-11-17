@@ -234,7 +234,7 @@ const std::string	&Request::getPath(void) const
 	return (_decoded_uri);
 }
 
-const std::string	&Request::getVersion(void) const
+const std::string	&Request::getVersion(void) const // useless function?
 {
 	return (_version);
 }
@@ -265,7 +265,7 @@ std::string	Request::getHeader(const std::string &key) const
 	return ("");
 }
 
-bool	Request::hasBody(void) const
+bool	Request::hasBody(void) const // useless function?
 {
 	return (_content_length > 0 || _chunked);
 }
@@ -291,12 +291,12 @@ void	Request::setBody(const std::string &body)
 	_body_parsed = true;
 }
 
-void	Request::setMethod(const std::string &method)
+void	Request::setMethod(const std::string &method) //useless function
 {
 	_method = method;
 }
 
-void	Request::setUri(const std::string &uri)
+void	Request::setUri(const std::string &uri) // useless function?
 {
 	_uri = uri;
 	_parseUri();
@@ -339,7 +339,7 @@ std::string	Request::decodeUri(const std::string &uri) const
 	return (result);
 }
 
-bool	Request::_parseRequestLine(const std::string &line)
+bool	Request::_parseRequestLine(const std::string &line) // useless function? check parseHeaders() ln.26.
 {
 	std::cout << "Parsing request line: '" << line << "'" << std::endl;
 
@@ -362,7 +362,7 @@ bool	Request::_parseRequestLine(const std::string &line)
 	return (true);
 }
 
-bool	Request::_parseHeaderLine(const std::string &line)
+bool	Request::_parseHeaderLine(const std::string &line) // useless function? check parseHeaders() ln.26.
 {
 	std::cout << "Parsing header: '" << line << "'" << std::endl;
 

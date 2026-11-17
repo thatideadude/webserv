@@ -14,9 +14,9 @@ class	Response
 		const std::string	&getBody(void) const;
 		const std::map<std::string, std::string>	&getHeaders(void) const;
 
-		void	setStatusLine(const std::string &status_line);
-		void	setHeader(const std::string &key, const std::string &value);
-		void	setBody(const std::string &body);
+		void	setStatusLine(const std::string &status_line); // not implemented
+		void	setHeader(const std::string &key, const std::string &value); // not implemented
+		void	setBody(const std::string &body); // not implemented here, see Request.cpp
 
 		std::string build(void) const;
 	private:

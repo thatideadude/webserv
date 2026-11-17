@@ -31,22 +31,22 @@ void	Response::clear(void)
 	_body.clear();
 }
 
-const std::string	&Response::getStatusLine(void) const
+const std::string	&Response::getStatusLine(void) const // useless function
 {
 	return (_status_line);
 }
 
-const std::map<std::string, std::string>	&Response::getHeaders(void) const
+const std::map<std::string, std::string>	&Response::getHeaders(void) const // useless function for response see request
 {
 	return (_headers);
 }
 
-const std::string	&Response::getBody(void) const
+const std::string	&Response::getBody(void) const // useless function for response see request
 {
 	return (_body);
 }
 
-std::string	Response::build(void) const
+std::string	Response::build(void) const // useless function
 {
 	std::string	result;
 	std::map<std::string, std::string>::const_iterator	it = _headers.begin();

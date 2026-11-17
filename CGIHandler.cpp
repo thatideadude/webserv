@@ -209,7 +209,7 @@ CGIState	CGIHandler::getState(void) const
 	return (_state);
 }
 
-const std::string	&CGIHandler::getRawOutput(void) const
+const std::string	&CGIHandler::getRawOutput(void) const // useless function, but could be useful for debugging
 {
 	return (_output_buffer);
 }
@@ -351,7 +351,7 @@ char	**CGIHandler::_buildEnv(const Request &request, const Location &location,
 	return (env);
 }
 
-void	CGIHandler::_freeArray(char **arr)
+void	CGIHandler::_freeArray(char **arr) // uselless function
 {
 	if (!arr)
 		return ;

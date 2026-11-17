@@ -81,7 +81,7 @@ Request	&Client::getRequest(void)
 	return (_request);
 }
 
-Response	&Client::getResponse(void)
+Response	&Client::getResponse(void) //useless function?
 {
 	return (_response);
 }
@@ -91,7 +91,7 @@ bool	Client::shouldKeepAlive(void) const
 	return (_keep_alive);
 }
 
-bool	Client::isComplete(void) const
+bool	Client::isComplete(void) const // useless function
 {
 	return (_state == COMPLETE || _state == CLOSED);
 }
@@ -132,7 +132,7 @@ void	Client::setSendBuffer(const std::string &buffer)
 	_bytes_sent = 0;
 }
 
-void	Client::appendSendBuffer(const std::string &data)
+void	Client::appendSendBuffer(const std::string &data) // uselless function?
 {
 	_send_buffer += data;
 }
@@ -146,17 +146,6 @@ void	Client::appendReadData(const char *data, size_t len)
 {
 	_read_buffer.append(data, len);
 	_last_activity = time(NULL);
-}
-
-void	Client::clearReadBuffer(void)
-{
-	_read_buffer.clear();
-}
-
-void	Client::clearSendBuffer(void)
-{
-	_send_buffer.clear();
-	_bytes_sent = 0;
 }
 
 void	Client::reset()

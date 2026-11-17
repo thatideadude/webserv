@@ -106,7 +106,7 @@ void Webserver::run(void)
 		_checkTimeouts();
 	}
 }
-void	Webserver::stop(void)
+void	Webserver::stop(void) // uselless function?
 {
 	_running = false;
 }
